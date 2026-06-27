@@ -8,6 +8,7 @@ const path = require("path");
 const http = require("http");
 const { Pool } = require("pg");
 const { createClient } = require("@supabase/supabase-js");
+const ws = require("ws");
 const { Server } = require("socket.io");
 
 const app = express();
@@ -29,7 +30,9 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 });
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
+  realtime: { transport: ws }
+});
 
 async function query(sql, params) {
   const result = await pool.query(sql, params);
