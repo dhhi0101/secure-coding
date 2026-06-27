@@ -1,13 +1,5 @@
 'use strict';
 
-// Force IPv4: Render free tier does not support IPv6
-const _dns = require("dns");
-const _origLookup = _dns.lookup.bind(_dns);
-_dns.lookup = function (hostname, options, callback) {
-  if (typeof options === "function") { callback = options; options = {}; }
-  options = Object.assign({}, options, { family: 4 });
-  return _origLookup(hostname, options, callback);
-};
 
 const express = require("express");
 const session = require("express-session");
