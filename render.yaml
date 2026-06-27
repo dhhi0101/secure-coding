@@ -8,7 +8,3 @@ services:
     envVars:
       - key: SESSION_SECRET
         generateValue: true
-    disk:
-      name: usedhub-data
-      mountPath: /app/data
-      sizeGB: 1
