@@ -1,0 +1,4 @@
+node_modules
+npm-debug.log
+market.db-shm
+market.db-wal

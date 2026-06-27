@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: usedhub
+    env: docker
+    autoDeploy: true
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: SESSION_SECRET
+        generateValue: true
+    disk:
+      name: usedhub-data
+      mountPath: /app/data
+      sizeGB: 1
