@@ -213,7 +213,7 @@ function layout(req, title, body) {
     "</head><body>",
     '<header class="topbar">',
     '<a class="brand" href="/">UsedHub</a>',
-    "<nav><a href=\"/products\">상품</a><a href=\"/chat\">전체 채팅</a>" + navLinks(user) + "</nav>",
+    "<nav><a href=\"/products\">상품</a><a href=\"/chat\">채팅</a>" + navLinks(user) + "</nav>",
     "</header>",
     '<main class="container">' + flash(req) + body + "</main>",
     "</body></html>"
@@ -287,12 +287,28 @@ function productCard(product) {
   ].join("");
 }
 
-function chatPage(title, roomType, roomId, messages) {
+function chatPage(title, roomType, roomId, messages, currentUserId) {
   const initial = messages.map(function (m) {
-    return '<div class="chat-message"><strong>' + h(m.displayName || m.display_name) +
+    const sid = m.senderId || m.sender_id || 0;
+    const uname = h(m.senderUsername || m.sender_username || "");
+    const dname = h(m.displayName || m.display_name);
+    return '<div class="chat-message"><strong class="chat-name" data-userid="' + sid + '" data-username="' + uname + '" data-displayname="' + dname + '">' + dname +
       "</strong><span>" + h(m.content) + "</span><small>" + h(m.createdAt || m.created_at) + "</small></div>";
   }).join("");
+  const popupHtml = [
+    '<div id="user-popup-overlay" onclick="closeUserPopup()">',
+    '<div id="user-popup" onclick="event.stopPropagation()">',
+    '<h3 id="popup-name"></h3>',
+    '<p id="popup-username" style="color:var(--muted)"></p>',
+    '<div class="actions" style="margin-top:12px">',
+    '<a id="popup-profile-link" class="button" href="#">프로필 보기</a>',
+    '<a id="popup-chat-link" class="button primary" href="#">1:1 채팅하기</a>',
+    '</div>',
+    '<button onclick="closeUserPopup()" style="margin-top:8px;width:100%">닫기</button>',
+    '</div></div>'
+  ].join("");
   return [
+    popupHtml,
     '<section class="card">',
     "<h1>" + h(title) + "</h1>",
     '<div id="messages" class="chat-box">' + initial + "</div>",
@@ -304,16 +320,17 @@ function chatPage(title, roomType, roomId, messages) {
     "<script>",
     "const socket = io();",
     "const chatConfig = " + JSON.stringify({ roomType: roomType, roomId: roomId }) + ";",
-    'const messages = document.getElementById("messages");',
+    "const currentUserId = " + Number(currentUserId || 0) + ";",
+    'const messagesEl = document.getElementById("messages");',
     'const form = document.getElementById("chat-form");',
     'const input = document.getElementById("content");',
     'socket.emit("join", chatConfig);',
     'socket.on("chat-message", function(m) {',
     '  const div = document.createElement("div");',
     '  div.className = "chat-message";',
-    '  div.innerHTML = "<strong>" + safe(m.displayName) + "</strong><span>" + safe(m.content) + "</span><small>" + safe(m.createdAt) + "</small>";',
-    "  messages.appendChild(div);",
-    "  messages.scrollTop = messages.scrollHeight;",
+    '  div.innerHTML = \'<strong class="chat-name" data-userid="\' + (m.senderId||0) + \'" data-username="\' + safe(m.senderUsername||"") + \'" data-displayname="\' + safe(m.displayName) + \'">\' + safe(m.displayName) + \'</strong><span>\' + safe(m.content) + \'</span><small>\' + safe(m.createdAt) + \'</small>\';',
+    "  messagesEl.appendChild(div);",
+    "  messagesEl.scrollTop = messagesEl.scrollHeight;",
     "});",
     'form.addEventListener("submit", function(e) {',
     "  e.preventDefault();",
@@ -321,6 +338,20 @@ function chatPage(title, roomType, roomId, messages) {
     '  socket.emit("chat-message", { roomType: chatConfig.roomType, roomId: chatConfig.roomId, content: input.value });',
     '  input.value = "";',
     "});",
+    'document.addEventListener("click", function(e) {',
+    '  const name = e.target.closest(".chat-name");',
+    '  if (!name) return;',
+    '  const userId = +name.dataset.userid;',
+    '  const username = name.dataset.username;',
+    '  const displayName = name.dataset.displayname;',
+    '  document.getElementById("popup-name").textContent = displayName;',
+    '  document.getElementById("popup-username").textContent = "@" + username;',
+    '  document.getElementById("popup-profile-link").href = "/users/" + userId;',
+    '  const chatLink = document.getElementById("popup-chat-link");',
+    '  if (!userId || userId === currentUserId) { chatLink.style.display = "none"; } else { chatLink.style.display = ""; chatLink.href = "/chat/start/" + userId; }',
+    '  document.getElementById("user-popup-overlay").style.display = "flex";',
+    "});",
+    'function closeUserPopup() { document.getElementById("user-popup-overlay").style.display = "none"; }',
     'function safe(v) { return String(v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/\'/g,"&#39;"); }',
     "</script>"
   ].join("");
@@ -397,9 +428,9 @@ app.get("/register", function (req, res) {
   res.send(layout(req, "회원가입", [
     '<section class="card auth"><h1>회원가입</h1>',
     '<form method="post" action="/register" class="stack">',
-    "<label>아이디<input name=\"username\" required /></label>",
-    "<label>표시 이름<input name=\"displayName\" required /></label>",
-    "<label>비밀번호<input type=\"password\" name=\"password\" required /></label>",
+    '<label>아이디<input name="username" required placeholder="영문 소문자, 숫자만" /><small class="hint">영문 소문자(a-z)와 숫자(0-9)만 사용 가능합니다.</small></label>',
+    '<label>닉네임<input name="displayName" required placeholder="다른 사람에게 보이는 이름" /></label>',
+    '<label>비밀번호<input type="password" name="password" required placeholder="영문, 숫자, 특수문자" /><small class="hint">영문(대소문자), 숫자, 특수문자만 사용 가능합니다.</small></label>',
     "<label>소개글<textarea name=\"bio\" rows=\"4\"></textarea></label>",
     "<button type=\"submit\">가입하기</button>",
     "</form></section>"
@@ -416,9 +447,22 @@ app.post("/register", async function (req, res, next) {
       req.session.error = "필수 항목을 모두 입력해주세요.";
       return res.redirect("/register");
     }
+    if (!/^[a-z0-9]+$/.test(username)) {
+      req.session.error = "아이디는 영문 소문자와 숫자만 사용할 수 있습니다.";
+      return res.redirect("/register");
+    }
+    if (!/^[a-zA-Z0-9!@#$%^&*()\-_=+\[\]{}|;:'",.<>/?~`\\]+$/.test(password)) {
+      req.session.error = "비밀번호는 영문, 숫자, 특수문자만 사용할 수 있습니다.";
+      return res.redirect("/register");
+    }
     const exists = await queryOne("SELECT id FROM users WHERE username = $1", [username]);
     if (exists) {
       req.session.error = "이미 사용 중인 아이디입니다.";
+      return res.redirect("/register");
+    }
+    const existsName = await queryOne("SELECT id FROM users WHERE display_name = $1", [displayName]);
+    if (existsName) {
+      req.session.error = "이미 사용 중인 닉네임입니다.";
       return res.redirect("/register");
     }
     await pool.query(
@@ -475,18 +519,28 @@ app.post("/logout", function (req, res) {
 
 app.get("/users", requireAuth, async function (req, res, next) {
   try {
+    const q = (req.query.q || "").trim();
     const users = await query(
-      `SELECT id, username, display_name AS "displayName", bio, balance, is_dormant AS "isDormant"
-       FROM users ORDER BY created_at DESC`
+      `SELECT id, username, display_name AS "displayName", bio, is_dormant AS "isDormant"
+       FROM users
+       WHERE ($1 = '' OR username ILIKE '%' || $1 || '%' OR display_name ILIKE '%' || $1 || '%')
+       ORDER BY created_at DESC`,
+      [q]
     );
     res.send(layout(req, "사용자 목록", [
-      "<section><h1>사용자 목록</h1><div class=\"stack\">",
+      '<section class="section-head"><h1>사용자 목록</h1></section>',
+      '<form method="get" action="/users" class="card search-panel" style="margin-bottom:16px">',
+      '<input name="q" value="' + h(q) + '" placeholder="아이디 또는 닉네임으로 검색" style="max-width:320px" />',
+      '<button type="submit" class="primary">검색</button>',
+      q ? '<a class="button" href="/users">초기화</a>' : "",
+      "</form>",
+      '<div class="stack">',
       users.map(function (u) {
         return '<article class="card"><h3><a href="/users/' + u.id + '">' + h(u.displayName) + "</a></h3>" +
           "<p>@" + h(u.username) + "</p><p>" + h(u.bio || "소개글 없음") + "</p>" +
-          "<p>잔액: " + amount(u.balance) + "</p><p>" + (u.isDormant ? "휴면 계정" : "활동 중") + "</p></article>";
-      }).join(""),
-      "</div></section>"
+          "<p>" + (u.isDormant ? "🔒 휴면 계정" : "활동 중") + "</p></article>";
+      }).join("") || "<p>검색 결과가 없습니다.</p>",
+      "</div>"
     ].join("")));
   } catch (e) { next(e); }
 });
@@ -504,7 +558,7 @@ app.get("/users/:id", requireAuth, async function (req, res, next) {
       "<h1>" + h(user.displayName) + "</h1>",
       "<p>아이디: @" + h(user.username) + "</p>",
       "<p>소개글: " + h(user.bio || "소개글 없음") + "</p>",
-      "<p>잔액: " + amount(user.balance) + "</p>",
+      req.session.user.id === user.id ? "<p>잔액: " + amount(user.balance) + "</p>" : "",
       "<p>상태: " + (user.isDormant ? "휴면 계정" : "활동 중") + "</p>",
       '<div class="actions">' + roomButton + transferButton + "</div>",
       reportSection, "</section>"
@@ -517,7 +571,7 @@ app.get("/mypage", requireAuth, function (req, res) {
   res.send(layout(req, "마이페이지", [
     '<section class="card"><h1>마이페이지</h1>',
     '<form method="post" action="/mypage" class="stack">',
-    '<label>표시 이름<input name="displayName" value="' + h(user.displayName) + '" required /></label>',
+    '<label>닉네임<input name="displayName" value="' + h(user.displayName) + '" required /></label>',
     '<label>소개글<textarea name="bio" rows="4">' + h(user.bio || "") + "</textarea></label>",
     "<label>새 비밀번호<input type=\"password\" name=\"password\" placeholder=\"변경하지 않으려면 비워두기\" /></label>",
     "<button type=\"submit\">수정하기</button>",
@@ -531,10 +585,19 @@ app.post("/mypage", requireAuth, async function (req, res, next) {
     const bio = (req.body.bio || "").trim();
     const password = req.body.password || "";
     if (!displayName) {
-      req.session.error = "표시 이름은 필수입니다.";
+      req.session.error = "닉네임은 필수입니다.";
+      return res.redirect("/mypage");
+    }
+    const dupName = await queryOne("SELECT id FROM users WHERE display_name = $1 AND id != $2", [displayName, req.session.user.id]);
+    if (dupName) {
+      req.session.error = "이미 사용 중인 닉네임입니다.";
       return res.redirect("/mypage");
     }
     if (password) {
+      if (!/^[a-zA-Z0-9!@#$%^&*()\-_=+\[\]{}|;:'",.<>/?~`\\]+$/.test(password)) {
+        req.session.error = "비밀번호는 영문, 숫자, 특수문자만 사용할 수 있습니다.";
+        return res.redirect("/mypage");
+      }
       await pool.query("UPDATE users SET display_name = $1, bio = $2, password_hash = $3 WHERE id = $4",
         [displayName, bio, bcrypt.hashSync(password, 10), req.session.user.id]);
     } else {
@@ -827,14 +890,65 @@ app.post("/reports", requireAuth, async function (req, res, next) {
   } catch (e) { next(e); }
 });
 
+function chatTabNav(active) {
+  return [
+    '<div class="chat-tabs">',
+    '<a href="/chat" class="tab-btn' + (active === "global" ? " active" : "") + '">전체 채팅</a>',
+    '<a href="/chat?tab=dms" class="tab-btn' + (active === "dms" ? " active" : "") + '">1:1 채팅</a>',
+    '</div>'
+  ].join("");
+}
+
 app.get("/chat", requireAuth, async function (req, res, next) {
   try {
-    const messages = await query(
-      `SELECT m.content, m.created_at AS "createdAt", u.display_name AS "displayName"
-       FROM messages m JOIN users u ON u.id = m.sender_id
-       WHERE m.room_type = 'global' ORDER BY m.id ASC LIMIT 100`
-    );
-    res.send(layout(req, "전체 채팅", chatPage("전체 채팅", "global", "", messages)));
+    const tab = req.query.tab || "global";
+    if (tab === "dms") {
+      const rooms = await query(
+        `SELECT dr.id,
+          CASE WHEN dr.user_a_id = $1 THEN ub.display_name ELSE ua.display_name END AS "partnerName",
+          CASE WHEN dr.user_a_id = $1 THEN ub.id ELSE ua.id END AS "partnerId",
+          CASE WHEN dr.user_a_id = $1 THEN ub.username ELSE ua.username END AS "partnerUsername",
+          (SELECT content FROM messages WHERE room_type='direct' AND room_id=dr.id ORDER BY id DESC LIMIT 1) AS "lastMessage",
+          (SELECT created_at FROM messages WHERE room_type='direct' AND room_id=dr.id ORDER BY id DESC LIMIT 1) AS "lastAt"
+        FROM direct_rooms dr
+        JOIN users ua ON ua.id = dr.user_a_id
+        JOIN users ub ON ub.id = dr.user_b_id
+        WHERE dr.user_a_id = $1 OR dr.user_b_id = $1
+        ORDER BY "lastAt" DESC NULLS LAST`,
+        [req.session.user.id]
+      );
+      res.send(layout(req, "1:1 채팅 목록", [
+        chatTabNav("dms"),
+        '<section class="card"><h2>1:1 채팅 목록</h2>',
+        '<div class="stack">',
+        rooms.length ? rooms.map(function (r) {
+          return '<a href="/chat/direct/' + r.id + '" class="subcard dm-item">' +
+            '<strong>' + h(r.partnerName) + '</strong>' +
+            '<span style="color:var(--muted)">@' + h(r.partnerUsername) + '</span>' +
+            '<span>' + h(r.lastMessage || "메시지 없음") + '</span>' +
+            (r.lastAt ? '<small>' + h(r.lastAt) + '</small>' : "") +
+            '</a>';
+        }).join("") : '<p>아직 1:1 채팅이 없습니다.</p>',
+        '</div></section>'
+      ].join("")));
+    } else {
+      const messages = await query(
+        `SELECT m.content, m.created_at AS "createdAt", u.display_name AS "displayName",
+         u.id AS "senderId", u.username AS "senderUsername"
+         FROM messages m JOIN users u ON u.id = m.sender_id
+         WHERE m.room_type = 'global' ORDER BY m.id ASC LIMIT 100`
+      );
+      res.send(layout(req, "전체 채팅", chatTabNav("global") + chatPage("전체 채팅", "global", "", messages, req.session.user.id)));
+    }
+  } catch (e) { next(e); }
+});
+
+app.get("/chat/start/:userId", requireAuth, async function (req, res, next) {
+  try {
+    const targetId = Number(req.params.userId);
+    if (!targetId || targetId === req.session.user.id) return res.redirect("/chat");
+    const roomId = await getDirectRoomId(req.session.user.id, targetId);
+    res.redirect("/chat/direct/" + roomId);
   } catch (e) { next(e); }
 });
 
@@ -854,7 +968,8 @@ app.get("/chat/direct/:roomId", requireAuth, async function (req, res, next) {
        WHERE m.room_type = 'direct' AND m.room_id = $1 ORDER BY m.id ASC LIMIT 100`,
       [roomId]
     );
-    res.send(layout(req, "1:1 채팅", chatPage(partner.displayName + "님과의 대화", "direct", roomId, messages)));
+    const backLink = '<a href="/chat?tab=dms" style="display:inline-block;margin-bottom:12px;color:var(--brand)">← 채팅 목록</a>';
+    res.send(layout(req, "1:1 채팅", backLink + chatPage(partner.displayName + "님과의 대화", "direct", roomId, messages, req.session.user.id)));
   } catch (e) { next(e); }
 });
 
@@ -1003,6 +1118,8 @@ io.on("connection", function (socket) {
     );
     io.to(roomType === "global" ? "global" : "direct:" + roomId).emit("chat-message", {
       displayName: sessionUser.displayName,
+      senderUsername: sessionUser.username,
+      senderId: sessionUser.id,
       content: content,
       createdAt: new Date().toISOString()
     });

@@ -94,6 +94,47 @@ label { display: grid; gap: 6px; }
 }
 .subcard span, .subcard small, .product-card small { color: var(--muted); }
 .admin-grid { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+.hint { color: var(--muted); font-size: 12px; }
+.chat-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+  border-bottom: 2px solid var(--line);
+  padding-bottom: 0;
+}
+.tab-btn {
+  padding: 10px 20px;
+  border-radius: 12px 12px 0 0;
+  color: var(--muted);
+  font-weight: 600;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+}
+.tab-btn.active { color: var(--brand); border-bottom-color: var(--brand); background: var(--brand-soft); }
+.tab-btn:hover:not(.active) { background: var(--brand-soft); color: var(--brand); }
+.dm-item { display: grid; gap: 4px; cursor: pointer; text-decoration: none; }
+.dm-item:hover { background: var(--brand-soft); }
+.chat-name { cursor: pointer; }
+.chat-name:hover { color: var(--brand); text-decoration: underline; }
+#user-popup-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.4);
+  z-index: 100;
+  align-items: center;
+  justify-content: center;
+}
+#user-popup {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  padding: 24px;
+  min-width: 260px;
+  max-width: 340px;
+  width: 90%;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.2);
+}
 @media (max-width: 768px) {
   .detail, .inline-card { grid-template-columns: 1fr; }
   .container { padding: 16px; }
