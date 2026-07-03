@@ -114,6 +114,8 @@ async function initDB() {
     )
   `);
 
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen TEXT`);
+
   const adminCheck = await queryOne("SELECT COUNT(*) AS count FROM users WHERE is_admin = 1");
   if (parseInt(adminCheck.count) === 0) {
     await pool.query(
@@ -176,6 +178,16 @@ function h(value) {
 
 function amount(value) {
   return Number(value || 0).toLocaleString("ko-KR") + "원";
+}
+
+function formatKST(v) {
+  if (!v) return "";
+  try {
+    return new Date(v).toLocaleString("ko-KR", {
+      timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit"
+    });
+  } catch (e) { return String(v); }
 }
 
 function flash(req) {
@@ -288,47 +300,53 @@ function productCard(product) {
 }
 
 function chatPage(title, roomType, roomId, messages, currentUserId) {
+  const uid = Number(currentUserId || 0);
   const initial = messages.map(function (m) {
-    const sid = m.senderId || m.sender_id || 0;
+    const sid = Number(m.senderId || m.sender_id || 0);
     const uname = h(m.senderUsername || m.sender_username || "");
     const dname = h(m.displayName || m.display_name);
-    return '<div class="chat-message"><strong class="chat-name" data-userid="' + sid + '" data-username="' + uname + '" data-displayname="' + dname + '">' + dname +
-      "</strong><span>" + h(m.content) + "</span><small>" + h(m.createdAt || m.created_at) + "</small></div>";
+    const isMine = uid !== 0 && sid === uid;
+    const nameEl = !isMine ? '<strong class="chat-name" data-userid="' + sid + '" data-username="' + uname + '" data-displayname="' + dname + '">' + dname + '</strong>' : "";
+    return '<div class="chat-message ' + (isMine ? "mine" : "other") + '">' + nameEl +
+      '<div class="bubble"><span>' + h(m.content) + '</span><small>' + formatKST(m.createdAt || m.created_at) + '</small></div></div>';
   }).join("");
   const popupHtml = [
     '<div id="user-popup-overlay" onclick="closeUserPopup()">',
     '<div id="user-popup" onclick="event.stopPropagation()">',
     '<h3 id="popup-name"></h3>',
-    '<p id="popup-username" style="color:var(--muted)"></p>',
-    '<div class="actions" style="margin-top:12px">',
+    '<p id="popup-username"></p>',
+    '<div class="actions" style="margin-top:16px">',
     '<a id="popup-profile-link" class="button" href="#">프로필 보기</a>',
     '<a id="popup-chat-link" class="button primary" href="#">1:1 채팅하기</a>',
     '</div>',
-    '<button onclick="closeUserPopup()" style="margin-top:8px;width:100%">닫기</button>',
+    '<button onclick="closeUserPopup()" style="margin-top:10px;width:100%">닫기</button>',
     '</div></div>'
   ].join("");
   return [
     popupHtml,
-    '<section class="card">',
-    "<h1>" + h(title) + "</h1>",
+    '<section class="card chat-section">',
+    "<h2>" + h(title) + "</h2>",
     '<div id="messages" class="chat-box">' + initial + "</div>",
-    '<form id="chat-form" class="row">',
+    '<form id="chat-form" class="chat-input-row">',
     '<input id="content" autocomplete="off" maxlength="500" placeholder="메시지를 입력하세요." />',
-    "<button type=\"submit\">전송</button>",
+    '<button type="submit" class="primary">전송</button>',
     "</form></section>",
     '<script src="/socket.io/socket.io.js"></script>',
     "<script>",
     "const socket = io();",
     "const chatConfig = " + JSON.stringify({ roomType: roomType, roomId: roomId }) + ";",
-    "const currentUserId = " + Number(currentUserId || 0) + ";",
+    "const currentUserId = " + uid + ";",
     'const messagesEl = document.getElementById("messages");',
     'const form = document.getElementById("chat-form");',
     'const input = document.getElementById("content");',
     'socket.emit("join", chatConfig);',
+    'function fmtDate(v){try{return new Date(v).toLocaleString("ko-KR",{timeZone:"Asia/Seoul",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"});}catch(e){return String(v||"");}}',
     'socket.on("chat-message", function(m) {',
+    '  const isMine = m.senderId === currentUserId;',
     '  const div = document.createElement("div");',
-    '  div.className = "chat-message";',
-    '  div.innerHTML = \'<strong class="chat-name" data-userid="\' + (m.senderId||0) + \'" data-username="\' + safe(m.senderUsername||"") + \'" data-displayname="\' + safe(m.displayName) + \'">\' + safe(m.displayName) + \'</strong><span>\' + safe(m.content) + \'</span><small>\' + safe(m.createdAt) + \'</small>\';',
+    '  div.className = "chat-message " + (isMine ? "mine" : "other");',
+    '  const nameEl = !isMine ? \'<strong class="chat-name" data-userid="\' + (m.senderId||0) + \'" data-username="\' + safe(m.senderUsername||"") + \'" data-displayname="\' + safe(m.displayName) + \'">\' + safe(m.displayName) + "</strong>" : "";',
+    '  div.innerHTML = nameEl + \'<div class="bubble"><span>\' + safe(m.content) + "</span><small>" + fmtDate(m.createdAt) + "</small></div>";',
     "  messagesEl.appendChild(div);",
     "  messagesEl.scrollTop = messagesEl.scrollHeight;",
     "});",
@@ -338,14 +356,13 @@ function chatPage(title, roomType, roomId, messages, currentUserId) {
     '  socket.emit("chat-message", { roomType: chatConfig.roomType, roomId: chatConfig.roomId, content: input.value });',
     '  input.value = "";',
     "});",
+    'messagesEl.scrollTop = messagesEl.scrollHeight;',
     'document.addEventListener("click", function(e) {',
     '  const name = e.target.closest(".chat-name");',
     '  if (!name) return;',
     '  const userId = +name.dataset.userid;',
-    '  const username = name.dataset.username;',
-    '  const displayName = name.dataset.displayname;',
-    '  document.getElementById("popup-name").textContent = displayName;',
-    '  document.getElementById("popup-username").textContent = "@" + username;',
+    '  document.getElementById("popup-name").textContent = name.dataset.displayname;',
+    '  document.getElementById("popup-username").textContent = "@" + name.dataset.username;',
     '  document.getElementById("popup-profile-link").href = "/users/" + userId;',
     '  const chatLink = document.getElementById("popup-chat-link");',
     '  if (!userId || userId === currentUserId) { chatLink.style.display = "none"; } else { chatLink.style.display = ""; chatLink.href = "/chat/start/" + userId; }',
@@ -504,6 +521,7 @@ app.post("/login", async function (req, res, next) {
       req.session.error = "신고 누적으로 휴면 전환된 계정입니다.";
       return res.redirect("/login");
     }
+    await pool.query("UPDATE users SET last_seen = $1 WHERE id = $2", [new Date().toISOString(), user.id]);
     req.session.user = {
       id: user.id, username: user.username, displayName: user.displayName,
       bio: user.bio, balance: user.balance, isDormant: user.isDormant, isAdmin: user.isAdmin
@@ -521,7 +539,7 @@ app.get("/users", requireAuth, async function (req, res, next) {
   try {
     const q = (req.query.q || "").trim();
     const users = await query(
-      `SELECT id, username, display_name AS "displayName", bio, is_dormant AS "isDormant"
+      `SELECT id, username, display_name AS "displayName", bio, is_dormant AS "isDormant", last_seen AS "lastSeen"
        FROM users
        WHERE ($1 = '' OR username ILIKE '%' || $1 || '%' OR display_name ILIKE '%' || $1 || '%')
        ORDER BY created_at DESC`,
@@ -536,9 +554,14 @@ app.get("/users", requireAuth, async function (req, res, next) {
       "</form>",
       '<div class="stack">',
       users.map(function (u) {
-        return '<article class="card"><h3><a href="/users/' + u.id + '">' + h(u.displayName) + "</a></h3>" +
-          "<p>@" + h(u.username) + "</p><p>" + h(u.bio || "소개글 없음") + "</p>" +
-          "<p>" + (u.isDormant ? "🔒 휴면 계정" : "활동 중") + "</p></article>";
+        const lastSeen = u.isDormant ? '<span class="badge dormant">휴면 계정</span>' :
+          (u.lastSeen ? '<span class="badge muted">마지막 접속 ' + formatKST(u.lastSeen) + '</span>' : '<span class="badge muted">접속 기록 없음</span>');
+        const avatar = '<div class="avatar">' + h(u.displayName).charAt(0) + '</div>';
+        return '<article class="card user-card"><a href="/users/' + u.id + '" class="user-card-inner">' +
+          avatar + '<div class="user-info"><strong>' + h(u.displayName) + '</strong>' +
+          '<p>@' + h(u.username) + '</p>' +
+          '<p>' + h(u.bio || "소개글 없음") + '</p>' +
+          lastSeen + '</div></a></article>';
       }).join("") || "<p>검색 결과가 없습니다.</p>",
       "</div>"
     ].join("")));
@@ -550,7 +573,7 @@ app.get("/users/:id", requireAuth, async function (req, res, next) {
     const user = await currentUserRow(Number(req.params.id));
     if (!user) return res.status(404).send(layout(req, "사용자 없음", "<p>사용자를 찾을 수 없습니다.</p>"));
     const me = req.session.user.id !== user.id;
-    const roomButton = me ? '<a class="button primary" href="/chat/direct/' + await getDirectRoomId(req.session.user.id, user.id) + '">1:1 채팅하기</a>' : "";
+    const roomButton = me ? '<a class="button primary" href="/chat/start/' + user.id + '">1:1 채팅하기</a>' : "";
     const transferButton = me ? '<a class="button" href="/wallet?receiver=' + user.id + '">송금하기</a>' : "";
     const reportSection = me ? reportForm("user", user.id) : "";
     res.send(layout(req, user.displayName, [
@@ -649,7 +672,7 @@ app.get("/wallet", requireAuth, async function (req, res, next) {
           return '<div class="subcard"><strong>' + dir + " · " + amount(item.amount) + "</strong>" +
             "<span>" + h(item.senderName) + " → " + h(item.receiverName) + "</span>" +
             "<span>" + h(item.note || "메모 없음") + "</span>" +
-            "<small>" + h(item.createdAt) + "</small></div>";
+            "<small>" + formatKST(item.createdAt) + "</small></div>";
         }).join("") || "<p>송금 내역이 없습니다.</p>") + "</div></article>",
       "</section>"
     ].join("")));
@@ -922,13 +945,15 @@ app.get("/chat", requireAuth, async function (req, res, next) {
         '<section class="card"><h2>1:1 채팅 목록</h2>',
         '<div class="stack">',
         rooms.length ? rooms.map(function (r) {
-          return '<a href="/chat/direct/' + r.id + '" class="subcard dm-item">' +
+          return '<a href="/chat/direct/' + r.id + '" class="dm-item">' +
+            '<div class="avatar">' + h(r.partnerName).charAt(0) + '</div>' +
+            '<div class="dm-item-info">' +
             '<strong>' + h(r.partnerName) + '</strong>' +
-            '<span style="color:var(--muted)">@' + h(r.partnerUsername) + '</span>' +
-            '<span>' + h(r.lastMessage || "메시지 없음") + '</span>' +
-            (r.lastAt ? '<small>' + h(r.lastAt) + '</small>' : "") +
+            '<span class="last-msg">@' + h(r.partnerUsername) + (r.lastMessage ? ' · ' + h(r.lastMessage) : '') + '</span>' +
+            '</div>' +
+            (r.lastAt ? '<small>' + formatKST(r.lastAt) + '</small>' : "") +
             '</a>';
-        }).join("") : '<p>아직 1:1 채팅이 없습니다.</p>',
+        }).join("") : '<p style="color:var(--muted);text-align:center;padding:24px 0">아직 1:1 채팅이 없습니다.</p>',
         '</div></section>'
       ].join("")));
     } else {
