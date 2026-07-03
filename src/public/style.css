@@ -275,6 +275,63 @@ label { display: grid; gap: 6px; font-size: 14px; font-weight: 600; }
 /* ── Report form ─────────────────────────── */
 .report-form { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 16px; }
 
+/* ── Notification badge ──────────────────── */
+.notif-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 16px; height: 16px; padding: 0 4px;
+  background: var(--danger); color: white;
+  border-radius: 999px; font-size: 10px; font-weight: 800;
+  margin-left: 3px; vertical-align: middle;
+}
+
+/* ── Toast ───────────────────────────────── */
+.toast {
+  position: fixed; bottom: 24px; right: 24px;
+  background: var(--text); color: white;
+  padding: 12px 18px; border-radius: 12px;
+  font-size: 14px; z-index: 200; max-width: 300px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+  animation: slideUp 0.3s ease;
+}
+.toast a { color: white; text-decoration: underline; }
+.toast.hide { opacity: 0; transition: opacity 0.4s; }
+@keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+/* ── Read markers ────────────────────────── */
+.read-marker, .unread-marker {
+  font-size: 11px; font-weight: 700; margin-top: 2px; display: block; text-align: right;
+}
+.unread-marker { color: var(--brand); }
+.read-marker { color: var(--muted); }
+
+/* ── Notifications page ──────────────────── */
+.notif-item { display: grid; gap: 4px; text-decoration: none; }
+.notif-item.unread { border-left: 3px solid var(--brand); padding-left: 11px; }
+.notif-item:hover { background: var(--brand-soft); }
+
+/* ── User search (wallet) ────────────────── */
+.user-search-wrap { position: relative; }
+.search-dropdown {
+  display: none; position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--panel); border: 1.5px solid var(--line); border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.1); overflow: hidden; margin-top: 4px;
+}
+.search-result-item {
+  padding: 10px 14px; cursor: pointer; font-size: 14px;
+  border-bottom: 1px solid var(--line);
+}
+.search-result-item:last-child { border-bottom: none; }
+.search-result-item:hover { background: var(--brand-soft); }
+
+/* ── DM header ───────────────────────────── */
+.dm-header {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 12px;
+}
+.back-link { color: var(--brand); font-size: 14px; font-weight: 600; }
+.leave-btn { background: var(--danger-soft); color: var(--danger); font-size: 13px; padding: 7px 14px; }
+.leave-btn:hover { background: #fecaca; }
+
 /* ── Responsive ──────────────────────────── */
 @media (max-width: 768px) {
   .detail, .inline-card { grid-template-columns: 1fr; }

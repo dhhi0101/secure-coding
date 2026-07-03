@@ -115,6 +115,21 @@ async function initDB() {
   `);
 
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen TEXT`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS notifications (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      type TEXT NOT NULL DEFAULT 'dm',
+      message TEXT NOT NULL,
+      link TEXT NOT NULL DEFAULT '',
+      is_read INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await pool.query(`ALTER TABLE direct_rooms ADD COLUMN IF NOT EXISTS user_a_left INTEGER DEFAULT 0`);
+  await pool.query(`ALTER TABLE direct_rooms ADD COLUMN IF NOT EXISTS user_b_left INTEGER DEFAULT 0`);
+  await pool.query(`ALTER TABLE direct_rooms ADD COLUMN IF NOT EXISTS user_a_last_read TEXT`);
+  await pool.query(`ALTER TABLE direct_rooms ADD COLUMN IF NOT EXISTS user_b_last_read TEXT`);
 
   const adminCheck = await queryOne("SELECT COUNT(*) AS count FROM users WHERE is_admin = 1");
   if (parseInt(adminCheck.count) === 0) {
@@ -203,8 +218,11 @@ function flash(req) {
 
 function navLinks(user) {
   if (!user) return '<a href="/login">로그인</a><a href="/register">회원가입</a>';
+  const nc = user.unreadNotifs || 0;
+  const badge = '<span id="notif-badge" class="notif-badge"' + (nc > 0 ? "" : ' style="display:none"') + ">" + nc + "</span>";
   return [
     '<a href="/users">사용자</a>',
+    '<a href="/notifications">알림' + badge + '</a>',
     '<a href="/wallet">지갑</a>',
     '<a href="/mypage">마이페이지</a>',
     '<a href="/my-products">내 상품</a>',
@@ -215,6 +233,23 @@ function navLinks(user) {
 
 function layout(req, title, body) {
   const user = req.session.user;
+  const socketInit = user ? [
+    '<script src="/socket.io/socket.io.js"></script>',
+    '<script>',
+    'window._socket=io();',
+    'window._socket.on("notification",function(n){',
+    '  var b=document.getElementById("notif-badge");',
+    '  if(b){b.textContent=n.count;b.style.display=n.count>0?"":"none";}',
+    '  showGlobalToast(n.message,n.link);',
+    '});',
+    'function showGlobalToast(msg,link){',
+    '  var t=document.createElement("div");t.className="toast";',
+    '  t.innerHTML=\'<a href="\'+link+\'">\'+msg+"</a>";',
+    '  document.body.appendChild(t);',
+    '  setTimeout(function(){t.classList.add("hide");setTimeout(function(){t.remove();},400);},4000);',
+    '}',
+    '</script>'
+  ].join("") : "";
   return [
     "<!DOCTYPE html>",
     '<html lang="ko"><head>',
@@ -223,6 +258,7 @@ function layout(req, title, body) {
     "<title>" + h(title) + "</title>",
     '<link rel="stylesheet" href="/style.css" />',
     "</head><body>",
+    socketInit,
     '<header class="topbar">',
     '<a class="brand" href="/">UsedHub</a>',
     "<nav><a href=\"/products\">상품</a><a href=\"/chat\">채팅</a>" + navLinks(user) + "</nav>",
@@ -299,16 +335,22 @@ function productCard(product) {
   ].join("");
 }
 
-function chatPage(title, roomType, roomId, messages, currentUserId) {
+function chatPage(title, roomType, roomId, messages, currentUserId, partnerLastRead) {
   const uid = Number(currentUserId || 0);
+  const pRead = partnerLastRead ? new Date(partnerLastRead).getTime() : 0;
   const initial = messages.map(function (m) {
     const sid = Number(m.senderId || m.sender_id || 0);
     const uname = h(m.senderUsername || m.sender_username || "");
     const dname = h(m.displayName || m.display_name);
     const isMine = uid !== 0 && sid === uid;
     const nameEl = !isMine ? '<strong class="chat-name" data-userid="' + sid + '" data-username="' + uname + '" data-displayname="' + dname + '">' + dname + '</strong>' : "";
+    let readEl = "";
+    if (isMine && roomType === "direct") {
+      const msgT = new Date(m.createdAt || m.created_at).getTime();
+      readEl = (pRead && pRead >= msgT) ? '<span class="read-marker">읽음</span>' : '<span class="unread-marker">1</span>';
+    }
     return '<div class="chat-message ' + (isMine ? "mine" : "other") + '">' + nameEl +
-      '<div class="bubble"><span>' + h(m.content) + '</span><small>' + formatKST(m.createdAt || m.created_at) + '</small></div></div>';
+      '<div class="bubble"><span>' + h(m.content) + '</span><small>' + formatKST(m.createdAt || m.created_at) + '</small></div>' + readEl + '</div>';
   }).join("");
   const popupHtml = [
     '<div id="user-popup-overlay" onclick="closeUserPopup()">',
@@ -331,9 +373,9 @@ function chatPage(title, roomType, roomId, messages, currentUserId) {
     '<input id="content" autocomplete="off" maxlength="500" placeholder="메시지를 입력하세요." />',
     '<button type="submit" class="primary">전송</button>',
     "</form></section>",
-    '<script src="/socket.io/socket.io.js"></script>',
     "<script>",
-    "const socket = io();",
+    "(function(){",
+    "const socket = window._socket;",
     "const chatConfig = " + JSON.stringify({ roomType: roomType, roomId: roomId }) + ";",
     "const currentUserId = " + uid + ";",
     'const messagesEl = document.getElementById("messages");',
@@ -346,10 +388,14 @@ function chatPage(title, roomType, roomId, messages, currentUserId) {
     '  const div = document.createElement("div");',
     '  div.className = "chat-message " + (isMine ? "mine" : "other");',
     '  const nameEl = !isMine ? \'<strong class="chat-name" data-userid="\' + (m.senderId||0) + \'" data-username="\' + safe(m.senderUsername||"") + \'" data-displayname="\' + safe(m.displayName) + \'">\' + safe(m.displayName) + "</strong>" : "";',
-    '  div.innerHTML = nameEl + \'<div class="bubble"><span>\' + safe(m.content) + "</span><small>" + fmtDate(m.createdAt) + "</small></div>";',
+    '  const readEl = (isMine && chatConfig.roomType==="direct") ? \'<span class="unread-marker">1</span>\' : "";',
+    '  div.innerHTML = nameEl + \'<div class="bubble"><span>\' + safe(m.content) + "</span><small>" + fmtDate(m.createdAt) + "</small></div>" + readEl;',
     "  messagesEl.appendChild(div);",
     "  messagesEl.scrollTop = messagesEl.scrollHeight;",
     "});",
+    'socket.on("messages-read", function() {',
+    '  document.querySelectorAll(".unread-marker").forEach(function(el){el.className="read-marker";el.textContent="읽음";});',
+    '});',
     'form.addEventListener("submit", function(e) {',
     "  e.preventDefault();",
     "  if (!input.value.trim()) return;",
@@ -370,6 +416,7 @@ function chatPage(title, roomType, roomId, messages, currentUserId) {
     "});",
     'function closeUserPopup() { document.getElementById("user-popup-overlay").style.display = "none"; }',
     'function safe(v) { return String(v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/\'/g,"&#39;"); }',
+    "})();",
     "</script>"
   ].join("");
 }
@@ -398,6 +445,10 @@ app.use(async function (req, _res, next) {
   if (req.session.user) {
     try {
       req.session.user = await currentUserRow(req.session.user.id) || null;
+      if (req.session.user) {
+        const nc = await queryOne("SELECT COUNT(*) AS count FROM notifications WHERE user_id = $1 AND is_read = 0", [req.session.user.id]);
+        req.session.user.unreadNotifs = parseInt(nc.count) || 0;
+      }
     } catch (_e) { /* ignore */ }
   }
   next();
@@ -633,14 +684,53 @@ app.post("/mypage", requireAuth, async function (req, res, next) {
   } catch (e) { next(e); }
 });
 
+app.get("/api/users/search", requireAuth, async function (req, res, next) {
+  try {
+    const q = (req.query.q || "").trim();
+    if (!q) return res.json([]);
+    const users = await query(
+      `SELECT id, display_name AS "displayName", username FROM users
+       WHERE id != $1 AND is_dormant = 0
+       AND (username ILIKE '%' || $2 || '%' OR display_name ILIKE '%' || $2 || '%')
+       ORDER BY display_name ASC LIMIT 10`,
+      [req.session.user.id, q]
+    );
+    res.json(users);
+  } catch (e) { next(e); }
+});
+
+app.get("/notifications", requireAuth, async function (req, res, next) {
+  try {
+    const notifs = await query(
+      `SELECT id, type, message, link, is_read AS "isRead", created_at AS "createdAt"
+       FROM notifications WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50`,
+      [req.session.user.id]
+    );
+    await pool.query("UPDATE notifications SET is_read = 1 WHERE user_id = $1", [req.session.user.id]);
+    res.send(layout(req, "알림", [
+      '<section class="card"><h1>알림</h1>',
+      '<div class="stack" style="margin-top:16px">',
+      notifs.length ? notifs.map(function (n) {
+        return '<a href="' + h(n.link) + '" class="subcard notif-item' + (n.isRead ? "" : " unread") + '">' +
+          '<span>' + h(n.message) + '</span>' +
+          '<small>' + formatKST(n.createdAt) + '</small></a>';
+      }).join("") : '<p style="color:var(--muted);text-align:center;padding:24px 0">알림이 없습니다.</p>',
+      '</div></section>'
+    ].join("")));
+  } catch (e) { next(e); }
+});
+
+app.post("/notifications/read-all", requireAuth, async function (req, res, next) {
+  try {
+    await pool.query("UPDATE notifications SET is_read = 1 WHERE user_id = $1", [req.session.user.id]);
+    res.redirect("/notifications");
+  } catch (e) { next(e); }
+});
+
 app.get("/wallet", requireAuth, async function (req, res, next) {
   try {
     const receiverId = Number(req.query.receiver || 0);
     const selectedReceiver = receiverId ? await currentUserRow(receiverId) : null;
-    const users = await query(
-      `SELECT id, display_name AS "displayName", username FROM users WHERE id != $1 AND is_dormant = 0 ORDER BY display_name ASC`,
-      [req.session.user.id]
-    );
     const transfers = await query(
       `SELECT t.id, t.amount, t.note, t.created_at AS "createdAt",
        sender.display_name AS "senderName", receiver.display_name AS "receiverName",
@@ -652,20 +742,61 @@ app.get("/wallet", requireAuth, async function (req, res, next) {
        ORDER BY t.created_at DESC LIMIT 20`,
       [req.session.user.id]
     );
+    const preVal = selectedReceiver ? h(selectedReceiver.displayName) + " (@" + h(selectedReceiver.username) + ")" : "";
+    const preId = selectedReceiver ? selectedReceiver.id : "";
     res.send(layout(req, "지갑", [
       '<section class="grid two-col">',
       '<article class="card"><h1>내 지갑</h1>',
       '<p class="price">' + amount(req.session.user.balance) + "</p>",
-      "<p>가입 시 기본 잔액 " + amount(DEFAULT_BALANCE) + "이 지급됩니다.</p>",
-      '<form method="post" action="/wallet/transfer" class="stack">',
-      '<label>받는 사람<select name="receiverId" required>' +
-        users.map(function (u) {
-          return '<option value="' + u.id + '"' + (selectedReceiver && selectedReceiver.id === u.id ? " selected" : "") + ">" + h(u.displayName) + " (@" + h(u.username) + ")</option>";
-        }).join("") + "</select></label>",
+      "<p style=\"color:var(--muted);font-size:13px\">가입 시 기본 잔액 " + amount(DEFAULT_BALANCE) + "이 지급됩니다.</p>",
+      '<form method="post" action="/wallet/transfer" class="stack" style="margin-top:20px" id="transfer-form">',
+      '<label>받는 사람',
+      '<div class="user-search-wrap">',
+      '<input id="user-search-input" placeholder="아이디 또는 닉네임으로 검색..." autocomplete="off" value="' + preVal + '" />',
+      '<div id="user-search-dropdown" class="search-dropdown"></div>',
+      '</div>',
+      '<input type="hidden" name="receiverId" id="receiver-id-input" value="' + preId + '" required />',
+      '<small id="selected-label" class="hint">' + (preVal ? "선택됨: " + preVal : "") + '</small>',
+      '</label>',
       '<label>송금 금액<input type="number" name="amount" min="1" required /></label>',
-      '<label>메모<textarea name="note" rows="3"></textarea></label>',
-      "<button type=\"submit\">송금하기</button>",
-      "</form></article>",
+      '<label>메모<textarea name="note" rows="2"></textarea></label>',
+      "<button type=\"submit\" class=\"primary\">송금하기</button>",
+      "</form>",
+      '<script>',
+      '(function(){',
+      'var inp=document.getElementById("user-search-input");',
+      'var drop=document.getElementById("user-search-dropdown");',
+      'var rid=document.getElementById("receiver-id-input");',
+      'var lbl=document.getElementById("selected-label");',
+      'var timer;',
+      'inp.addEventListener("input",function(){',
+      '  clearTimeout(timer);',
+      '  rid.value=""; lbl.textContent="";',
+      '  var q=this.value.trim();',
+      '  if(!q){drop.style.display="none";return;}',
+      '  timer=setTimeout(function(){',
+      '    fetch("/api/users/search?q="+encodeURIComponent(q))',
+      '    .then(function(r){return r.json();})',
+      '    .then(function(users){',
+      '      if(!users.length){drop.innerHTML=\'<div class="search-result-item" style="color:var(--muted)">결과 없음</div>\';}',
+      '      else{drop.innerHTML=users.map(function(u){return\'<div class="search-result-item" data-id="\'+u.id+\'" data-label="\'+u.displayName+\' (@\'+u.username+\')"><strong>\'+u.displayName+"</strong> <span style=\'color:var(--muted)\'>@"+u.username+"</span></div>";}).join("");}',
+      '      drop.style.display="block";',
+      '      drop.querySelectorAll("[data-id]").forEach(function(el){',
+      '        el.addEventListener("click",function(){',
+      '          rid.value=this.dataset.id;',
+      '          inp.value=this.dataset.label;',
+      '          lbl.textContent="선택됨: "+this.dataset.label;',
+      '          drop.style.display="none";',
+      '        });',
+      '      });',
+      '    });',
+      '  },300);',
+      '});',
+      'document.addEventListener("click",function(e){if(!inp.contains(e.target)&&!drop.contains(e.target))drop.style.display="none";});',
+      'document.getElementById("transfer-form").addEventListener("submit",function(e){if(!rid.value){e.preventDefault();alert("받는 사람을 선택해주세요.");}});',
+      '})();',
+      '</script>',
+      "</article>",
       '<article class="card"><h2>최근 송금 내역</h2><div class="stack">' +
         (transfers.map(function (item) {
           const dir = item.senderId === req.session.user.id ? "보냄" : "받음";
@@ -936,7 +1067,8 @@ app.get("/chat", requireAuth, async function (req, res, next) {
         FROM direct_rooms dr
         JOIN users ua ON ua.id = dr.user_a_id
         JOIN users ub ON ub.id = dr.user_b_id
-        WHERE dr.user_a_id = $1 OR dr.user_b_id = $1
+        WHERE (dr.user_a_id = $1 AND COALESCE(dr.user_a_left,0) = 0)
+           OR (dr.user_b_id = $1 AND COALESCE(dr.user_b_left,0) = 0)
         ORDER BY "lastAt" DESC NULLS LAST`,
         [req.session.user.id]
       );
@@ -985,16 +1117,46 @@ app.get("/chat/direct/:roomId", requireAuth, async function (req, res, next) {
       req.session.error = "채팅방에 접근할 수 없습니다.";
       return res.redirect("/chat");
     }
-    const partnerId = room.user_a_id === req.session.user.id ? room.user_b_id : room.user_a_id;
+    const isA = room.user_a_id === req.session.user.id;
+    const partnerId = isA ? room.user_b_id : room.user_a_id;
     const partner = await currentUserRow(partnerId);
+    const partnerLastRead = isA ? room.user_b_last_read : room.user_a_last_read;
+    // Update my last_read and mark DM notifications as read
+    await pool.query(
+      `UPDATE direct_rooms SET ${isA ? "user_a_last_read" : "user_b_last_read"} = $1, ${isA ? "user_a_left" : "user_b_left"} = 0 WHERE id = $2`,
+      [new Date().toISOString(), roomId]
+    );
+    await pool.query("UPDATE notifications SET is_read = 1 WHERE user_id = $1 AND link = $2",
+      [req.session.user.id, "/chat/direct/" + roomId]);
     const messages = await query(
-      `SELECT m.content, m.created_at AS "createdAt", u.display_name AS "displayName"
+      `SELECT m.content, m.created_at AS "createdAt", u.display_name AS "displayName",
+       u.id AS "senderId", u.username AS "senderUsername"
        FROM messages m JOIN users u ON u.id = m.sender_id
        WHERE m.room_type = 'direct' AND m.room_id = $1 ORDER BY m.id ASC LIMIT 100`,
       [roomId]
     );
-    const backLink = '<a href="/chat?tab=dms" style="display:inline-block;margin-bottom:12px;color:var(--brand)">← 채팅 목록</a>';
-    res.send(layout(req, "1:1 채팅", backLink + chatPage(partner.displayName + "님과의 대화", "direct", roomId, messages, req.session.user.id)));
+    const header = [
+      '<div class="dm-header">',
+      '<a href="/chat?tab=dms" class="back-link">← 채팅 목록</a>',
+      '<form method="post" action="/chat/direct/' + roomId + '/leave" class="inline" onsubmit="return confirm(\'채팅방을 나가시겠습니까?\')">',
+      '<button type="submit" class="leave-btn">나가기</button>',
+      '</form></div>'
+    ].join("");
+    res.send(layout(req, "1:1 채팅", header + chatPage(partner.displayName + "님과의 대화", "direct", roomId, messages, req.session.user.id, partnerLastRead)));
+  } catch (e) { next(e); }
+});
+
+app.post("/chat/direct/:roomId/leave", requireAuth, async function (req, res, next) {
+  try {
+    const roomId = Number(req.params.roomId);
+    const room = await queryOne("SELECT * FROM direct_rooms WHERE id = $1", [roomId]);
+    if (!room || [room.user_a_id, room.user_b_id].indexOf(req.session.user.id) === -1) {
+      return res.redirect("/chat?tab=dms");
+    }
+    const isA = room.user_a_id === req.session.user.id;
+    await pool.query(`UPDATE direct_rooms SET ${isA ? "user_a_left" : "user_b_left"} = 1 WHERE id = $1`, [roomId]);
+    req.session.success = "채팅방을 나갔습니다.";
+    res.redirect("/chat?tab=dms");
   } catch (e) { next(e); }
 });
 
@@ -1119,34 +1281,64 @@ app.post("/admin/products/:id/delete", requireAuth, requireAdmin, async function
 });
 
 io.on("connection", function (socket) {
-  socket.on("join", function (payload) {
-    const sessionUser = socket.request.session && socket.request.session.user;
-    if (!sessionUser) return;
+  const su0 = socket.request.session && socket.request.session.user;
+  if (su0) socket.join("user:" + su0.id);
+
+  socket.on("join", async function (payload) {
+    const su = socket.request.session && socket.request.session.user;
+    if (!su) return;
     const key = payload.roomType === "global" ? "global" : "direct:" + payload.roomId;
     socket.join(key);
+    if (payload.roomType === "direct" && payload.roomId) {
+      try {
+        const roomId = Number(payload.roomId);
+        const room = await queryOne("SELECT * FROM direct_rooms WHERE id = $1", [roomId]);
+        if (room && [room.user_a_id, room.user_b_id].indexOf(su.id) !== -1) {
+          const isA = room.user_a_id === su.id;
+          await pool.query(
+            `UPDATE direct_rooms SET ${isA ? "user_a_last_read" : "user_b_last_read"} = $1 WHERE id = $2`,
+            [new Date().toISOString(), roomId]
+          );
+          io.to("direct:" + roomId).emit("messages-read");
+        }
+      } catch (_e) { /* ignore */ }
+    }
   });
 
   socket.on("chat-message", async function (payload) {
-    const sessionUser = socket.request.session && socket.request.session.user;
-    if (!sessionUser || sessionUser.isDormant) return;
+    const su = socket.request.session && socket.request.session.user;
+    if (!su || su.isDormant) return;
     const content = String(payload.content || "").trim().slice(0, 500);
     if (!content) return;
     const roomType = payload.roomType === "direct" ? "direct" : "global";
     const roomId = roomType === "direct" ? Number(payload.roomId) : null;
     if (roomType === "direct") {
       const room = await queryOne("SELECT * FROM direct_rooms WHERE id = $1", [roomId]);
-      if (!room || [room.user_a_id, room.user_b_id].indexOf(sessionUser.id) === -1) return;
+      if (!room || [room.user_a_id, room.user_b_id].indexOf(su.id) === -1) return;
+      const recipientId = room.user_a_id === su.id ? room.user_b_id : room.user_a_id;
+      const isRecipA = room.user_a_id === recipientId;
+      // Reset recipient's left flag (room reappears on new message)
+      await pool.query(
+        `UPDATE direct_rooms SET ${isRecipA ? "user_a_left" : "user_b_left"} = 0 WHERE id = $1`, [roomId]
+      );
+      // Create notification for recipient
+      const preview = su.displayName + ": " + (content.length > 30 ? content.slice(0, 30) + "…" : content);
+      await pool.query(
+        "INSERT INTO notifications (user_id, type, message, link) VALUES ($1, 'dm', $2, $3)",
+        [recipientId, preview, "/chat/direct/" + roomId]
+      );
+      const nc = await queryOne("SELECT COUNT(*) AS count FROM notifications WHERE user_id = $1 AND is_read = 0", [recipientId]);
+      io.to("user:" + recipientId).emit("notification", {
+        message: preview, link: "/chat/direct/" + roomId, count: parseInt(nc.count) || 0
+      });
     }
     await pool.query(
       "INSERT INTO messages (room_type, room_id, sender_id, content) VALUES ($1, $2, $3, $4)",
-      [roomType, roomId, sessionUser.id, content]
+      [roomType, roomId, su.id, content]
     );
     io.to(roomType === "global" ? "global" : "direct:" + roomId).emit("chat-message", {
-      displayName: sessionUser.displayName,
-      senderUsername: sessionUser.username,
-      senderId: sessionUser.id,
-      content: content,
-      createdAt: new Date().toISOString()
+      displayName: su.displayName, senderUsername: su.username, senderId: su.id,
+      content: content, createdAt: new Date().toISOString()
     });
   });
 });
