@@ -332,6 +332,40 @@ label { display: grid; gap: 6px; font-size: 14px; font-weight: 600; }
 .leave-btn { background: var(--danger-soft); color: var(--danger); font-size: 13px; padding: 7px 14px; }
 .leave-btn:hover { background: #fecaca; }
 
+/* ── PIN Keypad ──────────────────────────── */
+.pin-overlay {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,0.45); z-index: 300;
+  align-items: center; justify-content: center;
+}
+.pin-overlay.active { display: flex; }
+.pin-box {
+  background: var(--panel); border-radius: 24px;
+  padding: 32px 28px; text-align: center;
+  width: 320px; box-shadow: 0 24px 64px rgba(0,0,0,0.2);
+}
+.pin-box h3 { font-size: 17px; font-weight: 800; margin-bottom: 6px; }
+.pin-box > p { font-size: 13px; color: var(--muted); margin-bottom: 20px; }
+.pin-dots { display: flex; gap: 12px; justify-content: center; margin-bottom: 24px; }
+.pin-dot {
+  width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid var(--line); background: transparent;
+  transition: background 0.1s, border-color 0.1s;
+}
+.pin-dot.filled { background: var(--brand); border-color: var(--brand); }
+.pin-keypad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.pin-key {
+  padding: 16px; border-radius: 12px; font-size: 20px; font-weight: 700;
+  background: var(--bg); border: none; cursor: pointer;
+  transition: background 0.12s, transform 0.08s;
+}
+.pin-key:hover { background: var(--brand-soft); color: var(--brand); }
+.pin-key:active { transform: scale(0.93); }
+.pin-key.del { font-size: 16px; }
+.pin-key.empty { background: transparent; cursor: default; pointer-events: none; }
+.pin-cancel { margin-top: 16px; font-size: 14px; color: var(--muted); cursor: pointer; }
+.pin-cancel:hover { color: var(--text); }
+
 /* ── Responsive ──────────────────────────── */
 @media (max-width: 768px) {
   .detail, .inline-card { grid-template-columns: 1fr; }

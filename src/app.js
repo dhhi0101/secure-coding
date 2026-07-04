@@ -25,6 +25,7 @@ const DEFAULT_BALANCE = 100000;
 const PRODUCT_REPORT_THRESHOLD = 3;
 const USER_REPORT_THRESHOLD = 3;
 const BUCKET = "uploads";
+const REGIONS = ["서울특별시","부산광역시","대구광역시","인천광역시","광주광역시","대전광역시","울산광역시","세종특별자치시","경기도","강원특별자치도","충청북도","충청남도","전북특별자치도","전라남도","경상북도","경상남도","제주특별자치도"];
 
 const pool = new Pool({
   connectionString: DATABASE_URL,
@@ -130,6 +131,7 @@ async function initDB() {
   await pool.query(`ALTER TABLE direct_rooms ADD COLUMN IF NOT EXISTS user_b_left INTEGER DEFAULT 0`);
   await pool.query(`ALTER TABLE direct_rooms ADD COLUMN IF NOT EXISTS user_a_last_read TEXT`);
   await pool.query(`ALTER TABLE direct_rooms ADD COLUMN IF NOT EXISTS user_b_last_read TEXT`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS wallet_pin_hash TEXT`);
 
   const adminCheck = await queryOne("SELECT COUNT(*) AS count FROM users WHERE is_admin = 1");
   if (parseInt(adminCheck.count) === 0) {
@@ -727,8 +729,118 @@ app.post("/notifications/read-all", requireAuth, async function (req, res, next)
   } catch (e) { next(e); }
 });
 
+function pinKeypadHtml(titleText, subtitleText, formAction, extraInputs) {
+  return [
+    '<section class="card auth" style="max-width:360px">',
+    '<h1>' + titleText + '</h1>',
+    '<p style="color:var(--muted);font-size:14px;margin-bottom:24px">' + subtitleText + '</p>',
+    '<div class="pin-dots" id="pin-dots">',
+    '<div class="pin-dot" id="d0"></div><div class="pin-dot" id="d1"></div>',
+    '<div class="pin-dot" id="d2"></div><div class="pin-dot" id="d3"></div>',
+    '<div class="pin-dot" id="d4"></div><div class="pin-dot" id="d5"></div>',
+    '</div>',
+    '<div class="pin-keypad" id="pin-keypad">',
+    [1,2,3,4,5,6,7,8,9].map(function(n){return '<button type="button" class="pin-key" data-v="'+n+'">'+n+'</button>';}).join(''),
+    '<button type="button" class="pin-key empty" disabled></button>',
+    '<button type="button" class="pin-key" data-v="0">0</button>',
+    '<button type="button" class="pin-key del" id="pin-del">⌫</button>',
+    '</div>',
+    '<form method="post" action="' + formAction + '" id="pin-form" style="display:none">',
+    (extraInputs || ''),
+    '<input type="hidden" name="pin" id="pin-value" />',
+    '</form>',
+    '<script>',
+    '(function(){',
+    'var val="";',
+    'var dots=[0,1,2,3,4,5].map(function(i){return document.getElementById("d"+i);});',
+    'function render(){dots.forEach(function(d,i){d.classList.toggle("filled",i<val.length);});}',
+    'document.getElementById("pin-keypad").addEventListener("click",function(e){',
+    '  var btn=e.target.closest("[data-v]");',
+    '  if(btn&&val.length<6){val+=btn.dataset.v;render();}',
+    '  if(val.length===6){',
+    '    document.getElementById("pin-value").value=val;',
+    '    document.getElementById("pin-form").submit();',
+    '  }',
+    '});',
+    'document.getElementById("pin-del").addEventListener("click",function(){val=val.slice(0,-1);render();});',
+    '})();',
+    '</script>',
+    '</section>'
+  ].join('');
+}
+
+app.get("/wallet/pin-setup", requireAuth, function (req, res) {
+  res.send(layout(req, "송금 비밀번호 설정", [
+    '<div id="pin-step-1">',
+    pinKeypadHtml("송금 비밀번호 설정", "처음 사용 시 6자리 비밀번호를 설정합니다.<br>새 비밀번호를 입력하세요.", "#", ''),
+    '</div>',
+    '<div id="pin-step-2" style="display:none">',
+    '<section class="card auth" style="max-width:360px">',
+    '<h1>비밀번호 확인</h1>',
+    '<p style="color:var(--muted);font-size:14px;margin-bottom:24px">한 번 더 입력해주세요</p>',
+    '<div class="pin-dots" id="pin-dots2">',
+    '<div class="pin-dot" id="e0"></div><div class="pin-dot" id="e1"></div>',
+    '<div class="pin-dot" id="e2"></div><div class="pin-dot" id="e3"></div>',
+    '<div class="pin-dot" id="e4"></div><div class="pin-dot" id="e5"></div>',
+    '</div>',
+    '<div class="pin-keypad" id="pin-keypad2">',
+    [1,2,3,4,5,6,7,8,9].map(function(n){return '<button type="button" class="pin-key" data-v="'+n+'">'+n+'</button>';}).join(''),
+    '<button type="button" class="pin-key empty" disabled></button>',
+    '<button type="button" class="pin-key" data-v="0">0</button>',
+    '<button type="button" class="pin-key del" id="pin-del2">⌫</button>',
+    '</div>',
+    '<form method="post" action="/wallet/pin-setup" id="pin-form2" style="display:none">',
+    '<input type="hidden" name="pin" id="pin-value2" />',
+    '</form>',
+    '<p id="pin-mismatch" style="color:var(--danger);font-size:13px;margin-top:12px;display:none">비밀번호가 일치하지 않습니다.</p>',
+    '</section>',
+    '</div>',
+    '<script>',
+    '(function(){',
+    'var first="";',
+    'var val1="",val2="";',
+    'var dots1=[0,1,2,3,4,5].map(function(i){return document.getElementById("d"+i);});',
+    'var dots2=[0,1,2,3,4,5].map(function(i){return document.getElementById("e"+i);});',
+    'function render1(){dots1.forEach(function(d,i){d.classList.toggle("filled",i<val1.length);});}',
+    'function render2(){dots2.forEach(function(d,i){d.classList.toggle("filled",i<val2.length);});}',
+    'document.getElementById("pin-keypad").addEventListener("click",function(e){',
+    '  var btn=e.target.closest("[data-v]");',
+    '  if(btn&&val1.length<6){val1+=btn.dataset.v;render1();}',
+    '  if(val1.length===6){first=val1;document.getElementById("pin-step-1").style.display="none";document.getElementById("pin-step-2").style.display="";}',
+    '});',
+    'document.getElementById("pin-del").addEventListener("click",function(){val1=val1.slice(0,-1);render1();});',
+    'document.getElementById("pin-keypad2").addEventListener("click",function(e){',
+    '  var btn=e.target.closest("[data-v]");',
+    '  if(btn&&val2.length<6){val2+=btn.dataset.v;render2();}',
+    '  if(val2.length===6){',
+    '    if(val2===first){document.getElementById("pin-value2").value=val2;document.getElementById("pin-form2").submit();}',
+    '    else{document.getElementById("pin-mismatch").style.display="";val2="";render2();}',
+    '  }',
+    '});',
+    'document.getElementById("pin-del2").addEventListener("click",function(){val2=val2.slice(0,-1);render2();document.getElementById("pin-mismatch").style.display="none";});',
+    '})();',
+    '</script>'
+  ].join('')));
+});
+
+app.post("/wallet/pin-setup", requireAuth, async function (req, res, next) {
+  try {
+    const pin = String(req.body.pin || "").trim();
+    if (!/^\d{6}$/.test(pin)) {
+      req.session.error = "6자리 숫자를 입력해주세요.";
+      return res.redirect("/wallet/pin-setup");
+    }
+    const hash = await bcrypt.hash(pin, 10);
+    await pool.query("UPDATE users SET wallet_pin_hash = $1 WHERE id = $2", [hash, req.session.user.id]);
+    req.session.success = "송금 비밀번호가 설정되었습니다.";
+    res.redirect("/wallet");
+  } catch (e) { next(e); }
+});
+
 app.get("/wallet", requireAuth, async function (req, res, next) {
   try {
+    const pinRow = await queryOne("SELECT wallet_pin_hash FROM users WHERE id = $1", [req.session.user.id]);
+    if (!pinRow || !pinRow.wallet_pin_hash) return res.redirect("/wallet/pin-setup");
     const receiverId = Number(req.query.receiver || 0);
     const selectedReceiver = receiverId ? await currentUserRow(receiverId) : null;
     const transfers = await query(
@@ -760,8 +872,51 @@ app.get("/wallet", requireAuth, async function (req, res, next) {
       '</label>',
       '<label>송금 금액<input type="number" name="amount" min="1" required /></label>',
       '<label>메모<textarea name="note" rows="2"></textarea></label>',
-      "<button type=\"submit\" class=\"primary\">송금하기</button>",
+      '<input type="hidden" name="pin" id="transfer-pin-value" />',
+      "<button type=\"button\" class=\"primary\" id=\"open-pin-overlay\">송금하기</button>",
       "</form>",
+      '<div class="pin-overlay" id="pin-overlay">',
+      '<div class="pin-box">',
+      '<h3>송금 비밀번호</h3>',
+      '<p id="pin-overlay-sub">6자리 비밀번호를 입력하세요</p>',
+      '<div class="pin-dots" id="po-dots">',
+      '<div class="pin-dot" id="po0"></div><div class="pin-dot" id="po1"></div>',
+      '<div class="pin-dot" id="po2"></div><div class="pin-dot" id="po3"></div>',
+      '<div class="pin-dot" id="po4"></div><div class="pin-dot" id="po5"></div>',
+      '</div>',
+      '<div class="pin-keypad" id="po-keypad">',
+      [1,2,3,4,5,6,7,8,9].map(function(n){return '<button type="button" class="pin-key" data-v="'+n+'">'+n+'</button>';}).join(''),
+      '<button type="button" class="pin-key empty" disabled></button>',
+      '<button type="button" class="pin-key" data-v="0">0</button>',
+      '<button type="button" class="pin-key del" id="po-del">⌫</button>',
+      '</div>',
+      '<div class="pin-cancel" id="pin-cancel">취소</div>',
+      '</div>',
+      '</div>',
+      '<script>',
+      '(function(){',
+      'var pval="";',
+      'var pdots=[0,1,2,3,4,5].map(function(i){return document.getElementById("po"+i);});',
+      'function prender(){pdots.forEach(function(d,i){d.classList.toggle("filled",i<pval.length);});}',
+      'document.getElementById("open-pin-overlay").addEventListener("click",function(){',
+      '  var rid=document.getElementById("receiver-id-input");',
+      '  if(!rid.value){alert("받는 사람을 선택해주세요.");return;}',
+      '  pval="";prender();document.getElementById("pin-overlay-sub").textContent="6자리 비밀번호를 입력하세요";',
+      '  document.getElementById("pin-overlay").classList.add("active");',
+      '});',
+      'document.getElementById("pin-cancel").addEventListener("click",function(){document.getElementById("pin-overlay").classList.remove("active");});',
+      'document.getElementById("po-keypad").addEventListener("click",function(e){',
+      '  var btn=e.target.closest("[data-v]");',
+      '  if(btn&&pval.length<6){pval+=btn.dataset.v;prender();}',
+      '  if(pval.length===6){',
+      '    document.getElementById("transfer-pin-value").value=pval;',
+      '    document.getElementById("pin-overlay").classList.remove("active");',
+      '    document.getElementById("transfer-form").submit();',
+      '  }',
+      '});',
+      'document.getElementById("po-del").addEventListener("click",function(){pval=pval.slice(0,-1);prender();});',
+      '})();',
+      '</script>',
       '<script>',
       '(function(){',
       'var inp=document.getElementById("user-search-input");',
@@ -816,12 +971,20 @@ app.post("/wallet/transfer", requireAuth, async function (req, res, next) {
     const receiverId = Number(req.body.receiverId);
     const value = Number(req.body.amount);
     const note = (req.body.note || "").trim();
+    const pin = String(req.body.pin || "").trim();
     if (!receiverId || !Number.isFinite(value) || value < 1) {
       req.session.error = "유효한 송금 정보를 입력해주세요.";
       return res.redirect("/wallet");
     }
     if (receiverId === senderId) {
       req.session.error = "자기 자신에게 송금할 수 없습니다.";
+      return res.redirect("/wallet");
+    }
+    const pinRow = await queryOne("SELECT wallet_pin_hash FROM users WHERE id = $1", [senderId]);
+    if (!pinRow || !pinRow.wallet_pin_hash) return res.redirect("/wallet/pin-setup");
+    const pinOk = await bcrypt.compare(pin, pinRow.wallet_pin_hash);
+    if (!pinOk) {
+      req.session.error = "송금 비밀번호가 틀렸습니다.";
       return res.redirect("/wallet");
     }
     const sender = await currentUserRow(senderId);
@@ -848,6 +1011,18 @@ app.post("/wallet/transfer", requireAuth, async function (req, res, next) {
     } finally {
       client.release();
     }
+    // Send notification to receiver
+    try {
+      const notifMsg = sender.displayName + "님이 " + value.toLocaleString() + "원을 송금했습니다." + (note ? " (" + note + ")" : "");
+      await pool.query(
+        "INSERT INTO notifications (user_id, type, message, link) VALUES ($1, 'transfer', $2, '/wallet')",
+        [receiverId, notifMsg]
+      );
+      const nc = await queryOne("SELECT COUNT(*) AS count FROM notifications WHERE user_id = $1 AND is_read = 0", [receiverId]);
+      io.to("user:" + receiverId).emit("notification", {
+        message: notifMsg, link: "/wallet", count: parseInt(nc.count) || 0
+      });
+    } catch (_ne) { /* notification failure must not abort transfer */ }
     await refreshSessionUser(req);
     req.session.success = "송금이 완료되었습니다.";
     res.redirect("/wallet");
@@ -887,7 +1062,7 @@ app.get("/products", async function (req, res, next) {
         ["전자기기", "가구", "도서", "의류", "기타"].map(function (c) {
           return '<option' + (category === c ? " selected" : "") + ">" + c + "</option>";
         }).join("") + "</select></label>",
-      '<label>지역<input name="region" value="' + h(region) + '" placeholder="예: 서울" /></label>',
+      '<label>지역<select name="region"><option value="">전체</option>' + REGIONS.map(function(r){return '<option'+(region===r?' selected':'')+'>'+r+'</option>';}).join('') + '</select></label>',
       '<label>상태<select name="status"><option value="">전체</option>' +
         ["판매중", "예약중", "판매완료"].map(function (s) {
           return '<option' + (status === s ? " selected" : "") + ">" + s + "</option>";
@@ -914,7 +1089,7 @@ app.get("/product/new", requireAuth, function (req, res) {
     "<label>설명<textarea name=\"description\" rows=\"5\" required></textarea></label>",
     "<label>가격<input name=\"price\" type=\"number\" min=\"0\" required /></label>",
     '<label>카테고리<select name="category"><option>전자기기</option><option>가구</option><option>도서</option><option>의류</option><option selected>기타</option></select></label>',
-    '<label>지역<input name="region" value="서울" required /></label>',
+    '<label>지역<select name="region" required><option value="">선택</option>' + REGIONS.map(function(r){return '<option>'+r+'</option>';}).join('') + '</select></label>',
     '<label>판매 상태<select name="status"><option selected>판매중</option><option>예약중</option><option>판매완료</option></select></label>',
     '<label>사진<input name="image" type="file" accept="image/*" required /></label>',
     "<button type=\"submit\">등록하기</button>",
@@ -1306,40 +1481,42 @@ io.on("connection", function (socket) {
   });
 
   socket.on("chat-message", async function (payload) {
-    const su = socket.request.session && socket.request.session.user;
-    if (!su || su.isDormant) return;
-    const content = String(payload.content || "").trim().slice(0, 500);
-    if (!content) return;
-    const roomType = payload.roomType === "direct" ? "direct" : "global";
-    const roomId = roomType === "direct" ? Number(payload.roomId) : null;
-    if (roomType === "direct") {
-      const room = await queryOne("SELECT * FROM direct_rooms WHERE id = $1", [roomId]);
-      if (!room || [room.user_a_id, room.user_b_id].indexOf(su.id) === -1) return;
-      const recipientId = room.user_a_id === su.id ? room.user_b_id : room.user_a_id;
-      const isRecipA = room.user_a_id === recipientId;
-      // Reset recipient's left flag (room reappears on new message)
+    try {
+      const su = socket.request.session && socket.request.session.user;
+      if (!su || su.isDormant) return;
+      const content = String(payload.content || "").trim().slice(0, 500);
+      if (!content) return;
+      const roomType = payload.roomType === "direct" ? "direct" : "global";
+      const roomId = roomType === "direct" ? Number(payload.roomId) : null;
+      if (roomType === "direct") {
+        const room = await queryOne("SELECT * FROM direct_rooms WHERE id = $1", [roomId]);
+        if (!room || [room.user_a_id, room.user_b_id].indexOf(su.id) === -1) return;
+        const recipientId = room.user_a_id === su.id ? room.user_b_id : room.user_a_id;
+        const isRecipA = room.user_a_id === recipientId;
+        await pool.query(
+          `UPDATE direct_rooms SET ${isRecipA ? "user_a_left" : "user_b_left"} = 0 WHERE id = $1`, [roomId]
+        );
+        try {
+          const preview = su.displayName + ": " + (content.length > 30 ? content.slice(0, 30) + "…" : content);
+          await pool.query(
+            "INSERT INTO notifications (user_id, type, message, link) VALUES ($1, 'dm', $2, $3)",
+            [recipientId, preview, "/chat/direct/" + roomId]
+          );
+          const nc = await queryOne("SELECT COUNT(*) AS count FROM notifications WHERE user_id = $1 AND is_read = 0", [recipientId]);
+          io.to("user:" + recipientId).emit("notification", {
+            message: preview, link: "/chat/direct/" + roomId, count: parseInt(nc.count) || 0
+          });
+        } catch (_ne) { /* notification failure must not block message delivery */ }
+      }
       await pool.query(
-        `UPDATE direct_rooms SET ${isRecipA ? "user_a_left" : "user_b_left"} = 0 WHERE id = $1`, [roomId]
+        "INSERT INTO messages (room_type, room_id, sender_id, content) VALUES ($1, $2, $3, $4)",
+        [roomType, roomId, su.id, content]
       );
-      // Create notification for recipient
-      const preview = su.displayName + ": " + (content.length > 30 ? content.slice(0, 30) + "…" : content);
-      await pool.query(
-        "INSERT INTO notifications (user_id, type, message, link) VALUES ($1, 'dm', $2, $3)",
-        [recipientId, preview, "/chat/direct/" + roomId]
-      );
-      const nc = await queryOne("SELECT COUNT(*) AS count FROM notifications WHERE user_id = $1 AND is_read = 0", [recipientId]);
-      io.to("user:" + recipientId).emit("notification", {
-        message: preview, link: "/chat/direct/" + roomId, count: parseInt(nc.count) || 0
+      io.to(roomType === "global" ? "global" : "direct:" + roomId).emit("chat-message", {
+        displayName: su.displayName, senderUsername: su.username, senderId: su.id,
+        content: content, createdAt: new Date().toISOString()
       });
-    }
-    await pool.query(
-      "INSERT INTO messages (room_type, room_id, sender_id, content) VALUES ($1, $2, $3, $4)",
-      [roomType, roomId, su.id, content]
-    );
-    io.to(roomType === "global" ? "global" : "direct:" + roomId).emit("chat-message", {
-      displayName: su.displayName, senderUsername: su.username, senderId: su.id,
-      content: content, createdAt: new Date().toISOString()
-    });
+    } catch (_e) { /* ignore */ }
   });
 });
 
