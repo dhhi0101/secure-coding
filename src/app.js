@@ -1474,7 +1474,9 @@ io.on("connection", function (socket) {
             `UPDATE direct_rooms SET ${isA ? "user_a_last_read" : "user_b_last_read"} = $1 WHERE id = $2`,
             [new Date().toISOString(), roomId]
           );
-          io.to("direct:" + roomId).emit("messages-read");
+          // Notify the PARTNER that their sent messages have been read
+          const partnerId = isA ? room.user_b_id : room.user_a_id;
+          io.to("user:" + partnerId).emit("messages-read");
         }
       } catch (_e) { /* ignore */ }
     }
