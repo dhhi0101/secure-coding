@@ -263,8 +263,10 @@ function layout(req, title, body) {
     socketInit,
     '<header class="topbar">',
     '<a class="brand" href="/">UsedHub</a>',
-    "<nav><a href=\"/products\">상품</a><a href=\"/chat\">채팅</a>" + navLinks(user) + "</nav>",
-    "</header>",
+    '<button class="hamburger" id="nav-hamburger" aria-label="메뉴" onclick="document.getElementById(\'main-nav\').classList.toggle(\'open\')">&#9776;</button>',
+    '<nav id="main-nav"><a href="/products">상품</a><a href="/chat">채팅</a>' + navLinks(user) + '</nav>',
+    '</header>',
+    '<script>document.addEventListener("click",function(e){var n=document.getElementById("main-nav"),b=document.getElementById("nav-hamburger");if(n&&b&&!n.contains(e.target)&&!b.contains(e.target))n.classList.remove("open");});</script>',
     '<main class="container">' + flash(req) + body + "</main>",
     "</body></html>"
   ].join("");
@@ -770,64 +772,64 @@ function pinKeypadHtml(titleText, subtitleText, formAction, extraInputs) {
 }
 
 app.get("/wallet/pin-setup", requireAuth, function (req, res) {
+  const keys = [1,2,3,4,5,6,7,8,9].map(function(n){
+    return '<button type="button" class="pin-key" data-v="'+n+'">'+n+'</button>';
+  }).join('') +
+    '<button type="button" class="pin-key empty" disabled></button>' +
+    '<button type="button" class="pin-key" data-v="0">0</button>';
   res.send(layout(req, "송금 비밀번호 설정", [
-    '<div id="pin-step-1">',
-    pinKeypadHtml("송금 비밀번호 설정", "처음 사용 시 6자리 비밀번호를 설정합니다.<br>새 비밀번호를 입력하세요.", "#", ''),
-    '</div>',
-    '<div id="pin-step-2" style="display:none">',
     '<section class="card auth" style="max-width:360px">',
+    '<div id="ps1">',
+    '<h1>송금 비밀번호 설정</h1>',
+    '<p style="color:var(--muted);font-size:14px;margin-bottom:24px">처음 사용 시 6자리 비밀번호를 설정합니다.<br>새 비밀번호를 입력하세요.</p>',
+    '<div class="pin-dots">',
+    [0,1,2,3,4,5].map(function(i){return '<div class="pin-dot" id="d'+i+'"></div>';}).join(''),
+    '</div>',
+    '<div class="pin-keypad" id="pk1">' + keys + '<button type="button" class="pin-key del" id="del1">⌫</button></div>',
+    '</div>',
+    '<div id="ps2" style="display:none">',
     '<h1>비밀번호 확인</h1>',
     '<p style="color:var(--muted);font-size:14px;margin-bottom:24px">한 번 더 입력해주세요</p>',
-    '<div class="pin-dots" id="pin-dots2">',
-    '<div class="pin-dot" id="e0"></div><div class="pin-dot" id="e1"></div>',
-    '<div class="pin-dot" id="e2"></div><div class="pin-dot" id="e3"></div>',
-    '<div class="pin-dot" id="e4"></div><div class="pin-dot" id="e5"></div>',
+    '<div class="pin-dots">',
+    [0,1,2,3,4,5].map(function(i){return '<div class="pin-dot" id="e'+i+'"></div>';}).join(''),
     '</div>',
-    '<div class="pin-keypad" id="pin-keypad2">',
-    [1,2,3,4,5,6,7,8,9].map(function(n){return '<button type="button" class="pin-key" data-v="'+n+'">'+n+'</button>';}).join(''),
-    '<button type="button" class="pin-key empty" disabled></button>',
-    '<button type="button" class="pin-key" data-v="0">0</button>',
-    '<button type="button" class="pin-key del" id="pin-del2">⌫</button>',
+    '<div class="pin-keypad" id="pk2">' + keys + '<button type="button" class="pin-key del" id="del2">⌫</button></div>',
+    '<p id="pm" style="color:var(--danger);font-size:13px;margin-top:12px;display:none">비밀번호가 일치하지 않습니다.</p>',
     '</div>',
-    '<form method="post" action="/wallet/pin-setup" id="pin-form2" style="display:none">',
-    '<input type="hidden" name="pin" id="pin-value2" />',
+    '<form method="post" action="/wallet/pin-setup" id="psf" style="display:none">',
+    '<input type="hidden" name="pin" id="pv1" />',
+    '<input type="hidden" name="pin_confirm" id="pv2" />',
     '</form>',
-    '<p id="pin-mismatch" style="color:var(--danger);font-size:13px;margin-top:12px;display:none">비밀번호가 일치하지 않습니다.</p>',
-    '</section>',
-    '</div>',
-    '<script>',
-    '(function(){',
-    'var first="";',
-    'var val1="",val2="";',
-    'var dots1=[0,1,2,3,4,5].map(function(i){return document.getElementById("d"+i);});',
-    'var dots2=[0,1,2,3,4,5].map(function(i){return document.getElementById("e"+i);});',
-    'function render1(){dots1.forEach(function(d,i){d.classList.toggle("filled",i<val1.length);});}',
-    'function render2(){dots2.forEach(function(d,i){d.classList.toggle("filled",i<val2.length);});}',
-    'document.getElementById("pin-keypad").addEventListener("click",function(e){',
-    '  var btn=e.target.closest("[data-v]");',
-    '  if(btn&&val1.length<6){val1+=btn.dataset.v;render1();}',
-    '  if(val1.length===6){first=val1;document.getElementById("pin-step-1").style.display="none";document.getElementById("pin-step-2").style.display="";}',
+    '<script>(function(){',
+    'var v1="",v2="";',
+    'var d1=[0,1,2,3,4,5].map(function(i){return document.getElementById("d"+i);});',
+    'var d2=[0,1,2,3,4,5].map(function(i){return document.getElementById("e"+i);});',
+    'function r1(){d1.forEach(function(d,i){d.classList.toggle("filled",i<v1.length);});}',
+    'function r2(){d2.forEach(function(d,i){d.classList.toggle("filled",i<v2.length);});}',
+    'document.getElementById("pk1").addEventListener("click",function(e){',
+    '  var b=e.target.closest("[data-v]");if(b&&v1.length<6){v1+=b.dataset.v;r1();}',
+    '  if(v1.length===6){document.getElementById("ps1").style.display="none";document.getElementById("ps2").style.display="";}',
     '});',
-    'document.getElementById("pin-del").addEventListener("click",function(){val1=val1.slice(0,-1);render1();});',
-    'document.getElementById("pin-keypad2").addEventListener("click",function(e){',
-    '  var btn=e.target.closest("[data-v]");',
-    '  if(btn&&val2.length<6){val2+=btn.dataset.v;render2();}',
-    '  if(val2.length===6){',
-    '    if(val2===first){document.getElementById("pin-value2").value=val2;document.getElementById("pin-form2").submit();}',
-    '    else{document.getElementById("pin-mismatch").style.display="";val2="";render2();}',
+    'document.getElementById("del1").addEventListener("click",function(){v1=v1.slice(0,-1);r1();});',
+    'document.getElementById("pk2").addEventListener("click",function(e){',
+    '  var b=e.target.closest("[data-v]");if(b&&v2.length<6){v2+=b.dataset.v;r2();}',
+    '  if(v2.length===6){',
+    '    if(v2===v1){document.getElementById("pv1").value=v1;document.getElementById("pv2").value=v2;document.getElementById("psf").submit();}',
+    '    else{document.getElementById("pm").style.display="";v2="";r2();}',
     '  }',
     '});',
-    'document.getElementById("pin-del2").addEventListener("click",function(){val2=val2.slice(0,-1);render2();document.getElementById("pin-mismatch").style.display="none";});',
-    '})();',
-    '</script>'
+    'document.getElementById("del2").addEventListener("click",function(){v2=v2.slice(0,-1);r2();document.getElementById("pm").style.display="none";});',
+    '})();</script>',
+    '</section>'
   ].join('')));
 });
 
 app.post("/wallet/pin-setup", requireAuth, async function (req, res, next) {
   try {
     const pin = String(req.body.pin || "").trim();
-    if (!/^\d{6}$/.test(pin)) {
-      req.session.error = "6자리 숫자를 입력해주세요.";
+    const pinConfirm = String(req.body.pin_confirm || "").trim();
+    if (!/^\d{6}$/.test(pin) || pin !== pinConfirm) {
+      req.session.error = "비밀번호 입력이 올바르지 않습니다. 다시 시도해주세요.";
       return res.redirect("/wallet/pin-setup");
     }
     const hash = await bcrypt.hash(pin, 10);

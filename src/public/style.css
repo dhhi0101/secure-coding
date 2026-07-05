@@ -366,11 +366,45 @@ label { display: grid; gap: 6px; font-size: 14px; font-weight: 600; }
 .pin-cancel { margin-top: 16px; font-size: 14px; color: var(--muted); cursor: pointer; }
 .pin-cancel:hover { color: var(--text); }
 
+/* ── Hamburger ───────────────────────────── */
+.hamburger {
+  display: none;
+  background: none; border: none;
+  font-size: 22px; cursor: pointer;
+  padding: 8px 10px; border-radius: 8px;
+  color: var(--text); line-height: 1;
+  margin-left: auto;
+}
+.hamburger:hover { background: var(--bg); }
+
 /* ── Responsive ──────────────────────────── */
 @media (max-width: 768px) {
   .detail, .inline-card { grid-template-columns: 1fr; }
   .container { padding: 16px; }
-  .topbar { padding: 0 16px; }
+  .topbar { padding: 0 16px; flex-wrap: nowrap; }
   .chat-message { max-width: 88%; }
   .hero { padding: 24px; }
+  .hamburger { display: flex; }
+  #main-nav {
+    display: none;
+    position: absolute; top: 56px; left: 0; right: 0;
+    background: var(--panel);
+    border-bottom: 2px solid var(--line);
+    flex-direction: column;
+    padding: 8px 12px 14px;
+    z-index: 99;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.1);
+    gap: 2px;
+  }
+  #main-nav.open { display: flex; }
+  #main-nav a, #main-nav button {
+    width: 100%;
+    text-align: left;
+    padding: 12px 14px;
+    border-radius: 10px;
+    font-size: 15px;
+    justify-content: flex-start;
+  }
+  #main-nav form.inline { display: block; width: 100%; }
+  #main-nav form.inline button { width: 100%; }
 }
