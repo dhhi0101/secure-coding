@@ -254,6 +254,19 @@ label { display: grid; gap: 6px; font-size: 14px; font-weight: 600; }
 .rating-row label { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 15px; }
 .review-focus { border-color: var(--primary) !important; box-shadow: 0 0 0 3px rgba(15,118,110,0.15); }
 
+/* ── Transfer card in chat ───────────────── */
+.chat-message-transfer { display: flex; justify-content: center; margin: 12px 0; }
+.transfer-card {
+  display: flex; align-items: flex-start; gap: 12px;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 16px; padding: 14px 18px;
+  max-width: 320px; width: 100%;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+}
+.transfer-card-icon { font-size: 28px; line-height: 1; }
+.transfer-card strong { font-size: 14px; display: block; margin-bottom: 2px; }
+.transfer-card small { color: var(--muted); font-size: 12px; display: block; margin-top: 4px; }
+
 /* ── Auth ────────────────────────────────── */
 .auth { max-width: 420px; margin: 0 auto; }
 .auth h1 { margin-bottom: 24px; font-size: 22px; font-weight: 800; }

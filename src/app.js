@@ -132,6 +132,8 @@ async function initDB() {
   await pool.query(`ALTER TABLE direct_rooms ADD COLUMN IF NOT EXISTS user_a_last_read TEXT`);
   await pool.query(`ALTER TABLE direct_rooms ADD COLUMN IF NOT EXISTS user_b_last_read TEXT`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS wallet_pin_hash TEXT`);
+  await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS type TEXT NOT NULL DEFAULT 'text'`);
+  await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS meta TEXT`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS warnings INTEGER NOT NULL DEFAULT 0`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS suspended_until TIMESTAMP`);
   await pool.query(`
@@ -380,14 +382,39 @@ function productCard(product) {
   ].join("");
 }
 
-function chatPage(title, roomType, roomId, messages, currentUserId, partnerLastRead) {
+function renderTransferCard(m, isMine, uid) {
+  var meta = {};
+  try { meta = JSON.parse(m.meta || m.metaJson || "{}"); } catch (_) {}
+  var reviewBtn = isMine
+    ? '<a class="button primary" style="margin-top:8px;display:inline-block" href="/users/' + (m.receiverId || meta.receiverId || "") + '?review=' + meta.transferId + '">후기 남기기 →</a>'
+    : "";
+  return '<div class="transfer-card">' +
+    '<div class="transfer-card-icon">💸</div>' +
+    '<div><strong>' + h(m.content) + '</strong>' +
+    (meta.note ? '<p style="font-size:12px;color:var(--muted);margin:2px 0">' + h(meta.note) + '</p>' : '') +
+    '<small>' + formatKST(m.createdAt || m.created_at) + '</small>' +
+    reviewBtn + '</div></div>';
+}
+
+function chatPage(title, roomType, roomId, messages, currentUserId, partnerLastRead, partnerId) {
   const uid = Number(currentUserId || 0);
+  const pid = Number(partnerId || 0);
   const pRead = partnerLastRead ? new Date(partnerLastRead).getTime() : 0;
   const initial = messages.map(function (m) {
     const sid = Number(m.senderId || m.sender_id || 0);
     const uname = h(m.senderUsername || m.sender_username || "");
     const dname = h(m.displayName || m.display_name);
     const isMine = uid !== 0 && sid === uid;
+    const msgType = m.type || "text";
+
+    if (msgType === "transfer") {
+      var meta = {};
+      try { meta = JSON.parse(m.meta || m.metaJson || "{}"); } catch (_) {}
+      meta.receiverId = isMine ? pid : uid;
+      const enriched = Object.assign({}, m, { meta: JSON.stringify(meta) });
+      return '<div class="chat-message-transfer">' + renderTransferCard(enriched, isMine, uid) + '</div>';
+    }
+
     const nameEl = !isMine ? '<strong class="chat-name" data-userid="' + sid + '" data-username="' + uname + '" data-displayname="' + dname + '">' + dname + '</strong>' : "";
     let readEl = "";
     if (isMine && roomType === "direct") {
@@ -428,13 +455,26 @@ function chatPage(title, roomType, roomId, messages, currentUserId, partnerLastR
     'const input = document.getElementById("content");',
     'socket.emit("join", chatConfig);',
     'function fmtDate(v){try{return new Date(v).toLocaleString("ko-KR",{timeZone:"Asia/Seoul",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"});}catch(e){return String(v||"");}}',
+    'function renderTransferCard(m, isMine) {',
+    '  var meta={};try{meta=JSON.parse(m.meta||"{}");}catch(e){}',
+    '  var reviewBtn = isMine ? \'<a class="button primary" style="margin-top:8px;display:inline-block" href="/users/\'+meta.receiverId+\'?review=\'+meta.transferId+\'">후기 남기기 →</a>\' : "";',
+    '  return \'<div class="transfer-card"><div class="transfer-card-icon">💸</div><div><strong>\'+safe(m.content)+\'</strong>\'+(meta.note?\'<p style="font-size:12px;color:var(--muted);margin:2px 0">\'+safe(meta.note)+\'</p>\':\'\')+\'<small>\'+fmtDate(m.createdAt)+\'</small>\'+reviewBtn+\'</div></div>\';',
+    '}',
     'socket.on("chat-message", function(m) {',
     '  const isMine = m.senderId === currentUserId;',
     '  const div = document.createElement("div");',
-    '  div.className = "chat-message " + (isMine ? "mine" : "other");',
-    '  const nameEl = !isMine ? \'<strong class="chat-name" data-userid="\' + (m.senderId||0) + \'" data-username="\' + safe(m.senderUsername||"") + \'" data-displayname="\' + safe(m.displayName) + \'">\' + safe(m.displayName) + "</strong>" : "";',
-    '  const readEl = (isMine && chatConfig.roomType==="direct") ? \'<span class="unread-marker">1</span>\' : "";',
-    '  div.innerHTML = nameEl + \'<div class="bubble"><span>\' + safe(m.content) + "</span><small>" + fmtDate(m.createdAt) + "</small></div>" + readEl;',
+    '  if (m.type === "transfer") {',
+    '    div.className = "chat-message-transfer";',
+    '    var meta = {}; try { meta = JSON.parse(m.meta || "{}"); } catch(e) {}',
+    '    meta.receiverId = isMine ? ' + (pid ? pid : 0) + ' : currentUserId;',
+    '    m.meta = JSON.stringify(meta);',
+    '    div.innerHTML = renderTransferCard(m, isMine);',
+    '  } else {',
+    '    div.className = "chat-message " + (isMine ? "mine" : "other");',
+    '    const nameEl = !isMine ? \'<strong class="chat-name" data-userid="\' + (m.senderId||0) + \'" data-username="\' + safe(m.senderUsername||"") + \'" data-displayname="\' + safe(m.displayName) + \'">\' + safe(m.displayName) + "</strong>" : "";',
+    '    const readEl = (isMine && chatConfig.roomType==="direct") ? \'<span class="unread-marker">1</span>\' : "";',
+    '    div.innerHTML = nameEl + \'<div class="bubble"><span>\' + safe(m.content) + "</span><small>" + fmtDate(m.createdAt) + "</small></div>" + readEl;',
+    '  }',
     "  messagesEl.appendChild(div);",
     "  messagesEl.scrollTop = messagesEl.scrollHeight;",
     '  if(!isMine && chatConfig.roomType==="direct"){socket.emit("mark-read",{roomId:chatConfig.roomId});}',
@@ -1264,7 +1304,28 @@ app.post("/wallet/transfer", requireAuth, async function (req, res, next) {
     } finally {
       client.release();
     }
-    // Send notification to receiver
+    // 송금 완료 후 DM방에 거래 카드 메시지 삽입 + 실시간 전송
+    try {
+      const transferRow = await queryOne(
+        "SELECT id FROM transfers WHERE sender_id=$1 AND receiver_id=$2 ORDER BY id DESC LIMIT 1",
+        [senderId, receiverId]
+      );
+      const roomId = await getDirectRoomId(senderId, receiverId);
+      const meta = JSON.stringify({ transferId: transferRow.id, amount: value, note: note, senderName: sender.displayName });
+      const content = sender.displayName + "님이 " + value.toLocaleString() + "원을 송금했습니다.";
+      const msgRow = await queryOne(
+        "INSERT INTO messages (room_type, room_id, sender_id, content, type, meta) VALUES ('direct',$1,$2,$3,'transfer',$4) RETURNING id, created_at",
+        [roomId, senderId, content, meta]
+      );
+      const socketPayload = {
+        id: msgRow.id, roomType: "direct", roomId: roomId,
+        senderId: senderId, senderUsername: sender.username,
+        displayName: sender.displayName, content: content,
+        type: "transfer", meta: meta, createdAt: msgRow.created_at
+      };
+      io.to("direct:" + roomId).emit("chat-message", socketPayload);
+    } catch (_me) { /* DM 카드 삽입 실패해도 송금은 완료 */ }
+    // 알림 발송
     try {
       const notifMsg = sender.displayName + "님이 " + value.toLocaleString() + "원을 송금했습니다." + (note ? " (" + note + ")" : "");
       await pool.query(
@@ -1275,10 +1336,10 @@ app.post("/wallet/transfer", requireAuth, async function (req, res, next) {
       io.to("user:" + receiverId).emit("notification", {
         message: notifMsg, link: "/wallet", count: parseInt(nc.count) || 0
       });
-    } catch (_ne) { /* notification failure must not abort transfer */ }
+    } catch (_ne) {}
     await refreshSessionUser(req);
     req.session.success = "송금이 완료되었습니다.";
-    res.redirect("/wallet");
+    res.redirect("/chat/start/" + receiverId);
   } catch (e) { next(e); }
 });
 
@@ -1632,7 +1693,8 @@ app.get("/chat/direct/:roomId", requireAuth, async function (req, res, next) {
       [req.session.user.id, "/chat/direct/" + roomId]);
     const messages = await query(
       `SELECT m.content, m.created_at AS "createdAt", u.display_name AS "displayName",
-       u.id AS "senderId", u.username AS "senderUsername"
+       u.id AS "senderId", u.username AS "senderUsername",
+       m.type, m.meta AS "metaJson"
        FROM messages m JOIN users u ON u.id = m.sender_id
        WHERE m.room_type = 'direct' AND m.room_id = $1 ORDER BY m.id ASC LIMIT 100`,
       [roomId]
@@ -1644,7 +1706,7 @@ app.get("/chat/direct/:roomId", requireAuth, async function (req, res, next) {
       '<button type="submit" class="leave-btn">나가기</button>',
       '</form></div>'
     ].join("");
-    res.send(layout(req, "1:1 채팅", header + chatPage(partner.displayName + "님과의 대화", "direct", roomId, messages, req.session.user.id, partnerLastRead)));
+    res.send(layout(req, "1:1 채팅", header + chatPage(partner.displayName + "님과의 대화", "direct", roomId, messages, req.session.user.id, partnerLastRead, partnerId)));
   } catch (e) { next(e); }
 });
 
