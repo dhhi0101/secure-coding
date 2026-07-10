@@ -132,6 +132,29 @@ async function initDB() {
   await pool.query(`ALTER TABLE direct_rooms ADD COLUMN IF NOT EXISTS user_a_last_read TEXT`);
   await pool.query(`ALTER TABLE direct_rooms ADD COLUMN IF NOT EXISTS user_b_last_read TEXT`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS wallet_pin_hash TEXT`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS warnings INTEGER NOT NULL DEFAULT 0`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS suspended_until TIMESTAMP`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_blocks (
+      id SERIAL PRIMARY KEY,
+      blocker_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      blocked_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(blocker_id, blocked_id)
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS reviews (
+      id SERIAL PRIMARY KEY,
+      reviewer_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      reviewee_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      transfer_id INTEGER NOT NULL REFERENCES transfers(id) ON DELETE CASCADE,
+      rating TEXT NOT NULL CHECK(rating IN ('like','dislike')),
+      content TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(reviewer_id, transfer_id)
+    )
+  `);
 
   const adminCheck = await queryOne("SELECT COUNT(*) AS count FROM users WHERE is_admin = 1");
   if (parseInt(adminCheck.count) === 0) {
@@ -228,6 +251,7 @@ function navLinks(user) {
     '<a href="/wallet">지갑</a>',
     '<a href="/mypage">마이페이지</a>',
     '<a href="/my-products">내 상품</a>',
+    '<a href="/my-blocks">차단목록</a>',
     user.isAdmin ? '<a href="/admin">관리</a>' : "",
     '<form method="post" action="/logout" class="inline"><button type="submit">로그아웃</button></form>'
   ].join("");
@@ -275,7 +299,8 @@ function layout(req, title, body) {
 async function currentUserRow(userId) {
   return await queryOne(
     `SELECT id, username, display_name AS "displayName", bio, balance,
-     is_dormant AS "isDormant", is_admin AS "isAdmin" FROM users WHERE id = $1`,
+     is_dormant AS "isDormant", is_admin AS "isAdmin", warnings,
+     suspended_until AS "suspendedUntil" FROM users WHERE id = $1`,
     [userId]
   );
 }
@@ -302,6 +327,14 @@ async function getDirectRoomId(userAId, userBId) {
   return room.id;
 }
 
+function suspendLabel(until) {
+  if (!until) return "활동";
+  const diff = new Date(until) - Date.now();
+  if (diff <= 0) return "활동";
+  const days = Math.ceil(diff / 86400000);
+  return "정지 (" + days + "일 남음)";
+}
+
 async function enforceModeration(targetType, targetId) {
   const row = await queryOne(
     "SELECT COUNT(*) AS count FROM reports WHERE target_type = $1 AND target_id = $2",
@@ -312,7 +345,15 @@ async function enforceModeration(targetType, targetId) {
     await pool.query("UPDATE products SET is_blocked = 1 WHERE id = $1", [targetId]);
   }
   if (targetType === "user" && count >= USER_REPORT_THRESHOLD) {
-    await pool.query("UPDATE users SET is_dormant = 1 WHERE id = $1", [targetId]);
+    await pool.query("UPDATE users SET warnings = warnings + 1 WHERE id = $1", [targetId]);
+    await pool.query("DELETE FROM reports WHERE target_type = 'user' AND target_id = $1", [targetId]);
+    const warned = await queryOne("SELECT warnings FROM users WHERE id = $1", [targetId]);
+    const notifMsg = "신고가 누적되어 경고가 부여되었습니다. (총 " + warned.warnings + "회)";
+    await pool.query(
+      "INSERT INTO notifications (user_id, type, message, link) VALUES ($1, 'warning', $2, '/mypage')",
+      [targetId, notifMsg]
+    );
+    io.to("user:" + targetId).emit("notification", { message: notifMsg, link: "/mypage" });
   }
 }
 
@@ -419,9 +460,9 @@ function chatPage(title, roomType, roomId, messages, currentUserId, partnerLastR
     '  if (!userId || userId === currentUserId) { chatLink.style.display = "none"; } else { chatLink.style.display = ""; chatLink.href = "/chat/start/" + userId; }',
     '  document.getElementById("user-popup-overlay").style.display = "flex";',
     "});",
-    'function closeUserPopup() { document.getElementById("user-popup-overlay").style.display = "none"; }',
     'function safe(v) { return String(v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/\'/g,"&#39;"); }',
     "})();",
+    'function closeUserPopup() { document.getElementById("user-popup-overlay").style.display = "none"; }',
     "</script>"
   ].join("");
 }
@@ -591,7 +632,8 @@ app.post("/login", async function (req, res, next) {
     const password = req.body.password || "";
     const user = await queryOne(
       `SELECT id, username, display_name AS "displayName", password_hash AS "passwordHash", bio, balance,
-       is_dormant AS "isDormant", is_admin AS "isAdmin" FROM users WHERE username = $1`,
+       is_dormant AS "isDormant", is_admin AS "isAdmin", warnings, suspended_until AS "suspendedUntil"
+       FROM users WHERE username = $1`,
       [username]
     );
     if (!user || !bcrypt.compareSync(password, user.passwordHash)) {
@@ -599,7 +641,13 @@ app.post("/login", async function (req, res, next) {
       return res.redirect("/login");
     }
     if (user.isDormant) {
-      req.session.error = "신고 누적으로 휴면 전환된 계정입니다.";
+      req.session.error = "영구 정지된 계정입니다. 관리자에게 문의하세요.";
+      return res.redirect("/login");
+    }
+    if (user.suspendedUntil && new Date(user.suspendedUntil) > new Date()) {
+      const until = new Date(user.suspendedUntil);
+      const diff = Math.ceil((until - Date.now()) / 86400000);
+      req.session.error = "계정이 정지되었습니다. " + diff + "일 후 해제됩니다. (" + until.toLocaleDateString("ko-KR") + " 해제)";
       return res.redirect("/login");
     }
     await pool.query("UPDATE users SET last_seen = $1 WHERE id = $2", [new Date().toISOString(), user.id]);
@@ -651,29 +699,194 @@ app.get("/users", requireAuth, async function (req, res, next) {
 
 app.get("/users/:id", requireAuth, async function (req, res, next) {
   try {
+    const myId = req.session.user.id;
     const user = await currentUserRow(Number(req.params.id));
     if (!user) return res.status(404).send(layout(req, "사용자 없음", "<p>사용자를 찾을 수 없습니다.</p>"));
-    const me = req.session.user.id !== user.id;
-    const roomButton = me ? '<a class="button primary" href="/chat/start/' + user.id + '">1:1 채팅하기</a>' : "";
-    const transferButton = me ? '<a class="button" href="/wallet?receiver=' + user.id + '">송금하기</a>' : "";
-    const reportSection = me ? reportForm("user", user.id) : "";
+    const isMe = myId === user.id;
+
+    const [blockRow, reviewStats, reviewList, writableTransfers] = await Promise.all([
+      isMe ? null : queryOne(
+        "SELECT id FROM user_blocks WHERE blocker_id = $1 AND blocked_id = $2",
+        [myId, user.id]
+      ),
+      queryOne(
+        `SELECT COUNT(*) FILTER (WHERE rating='like') AS likes,
+                COUNT(*) FILTER (WHERE rating='dislike') AS dislikes
+         FROM reviews WHERE reviewee_id = $1`,
+        [user.id]
+      ),
+      query(
+        `SELECT r.rating, r.content, r.created_at AS "createdAt", u.display_name AS "reviewerName"
+         FROM reviews r JOIN users u ON u.id = r.reviewer_id
+         WHERE r.reviewee_id = $1 ORDER BY r.created_at DESC LIMIT 20`,
+        [user.id]
+      ),
+      isMe ? [] : query(
+        `SELECT t.id, t.amount, t.created_at AS "createdAt"
+         FROM transfers t
+         WHERE t.sender_id = $1 AND t.receiver_id = $2
+           AND NOT EXISTS (SELECT 1 FROM reviews rv WHERE rv.reviewer_id = $1 AND rv.transfer_id = t.id)
+         ORDER BY t.created_at DESC`,
+        [myId, user.id]
+      )
+    ]);
+
+    const isBlocked = !!blockRow;
+    const likes = parseInt(reviewStats.likes) || 0;
+    const dislikes = parseInt(reviewStats.dislikes) || 0;
+
+    const actions = isMe ? "" : [
+      '<div class="actions">',
+      '<a class="button primary" href="/chat/start/' + user.id + '">1:1 채팅하기</a>',
+      '<a class="button" href="/wallet?receiver=' + user.id + '">송금하기</a>',
+      '<form method="post" action="/users/' + user.id + '/block" class="inline">',
+      '<button type="submit" class="' + (isBlocked ? "danger" : "") + '">' + (isBlocked ? "차단 해제" : "차단하기") + '</button>',
+      '</form>',
+      '</div>'
+    ].join("");
+
+    const reviewForm = writableTransfers.length ? [
+      '<section class="card"><h2>거래 후기 작성</h2>',
+      '<p class="hint">송금한 거래에 대해 후기를 남길 수 있습니다.</p>',
+      writableTransfers.map(function (t) {
+        return '<form method="post" action="/reviews" class="stack review-form">' +
+          '<input type="hidden" name="revieweeId" value="' + user.id + '" />' +
+          '<input type="hidden" name="transferId" value="' + t.id + '" />' +
+          '<p class="hint">송금 ' + amount(t.amount) + ' · ' + formatKST(t.createdAt) + '</p>' +
+          '<div class="rating-row">' +
+          '<label><input type="radio" name="rating" value="like" required /> 👍 추천해요</label>' +
+          '<label><input type="radio" name="rating" value="dislike" /> 👎 비추천해요</label>' +
+          '</div>' +
+          '<label>후기<textarea name="content" rows="3" placeholder="거래 경험을 자유롭게 적어주세요 (선택)"></textarea></label>' +
+          '<button type="submit" class="primary">후기 등록</button></form>';
+      }).join("") +
+      '</section>'
+    ].join("") : "";
+
+    const reviewSection = [
+      '<section class="card"><h2>받은 후기</h2>',
+      '<div class="review-stats">',
+      '<span class="review-like">👍 ' + likes + '</span>',
+      '<span class="review-dislike">👎 ' + dislikes + '</span>',
+      '</div>',
+      reviewList.length ? '<div class="stack">' + reviewList.map(function (r) {
+        return '<div class="subcard">' +
+          '<div class="row"><strong>' + (r.rating === "like" ? "👍 추천" : "👎 비추천") + '</strong>' +
+          '<small>' + h(r.reviewerName) + ' · ' + formatKST(r.createdAt) + '</small></div>' +
+          (r.content ? '<p>' + h(r.content) + '</p>' : '') +
+          '</div>';
+      }).join("") + '</div>' : '<p class="hint">아직 후기가 없습니다.</p>',
+      '</section>'
+    ].join("");
+
     res.send(layout(req, user.displayName, [
       '<section class="card">',
       "<h1>" + h(user.displayName) + "</h1>",
       "<p>아이디: @" + h(user.username) + "</p>",
       "<p>소개글: " + h(user.bio || "소개글 없음") + "</p>",
-      req.session.user.id === user.id ? "<p>잔액: " + amount(user.balance) + "</p>" : "",
+      isMe ? "<p>잔액: " + amount(user.balance) + "</p>" : "",
       "<p>상태: " + (user.isDormant ? "휴면 계정" : "활동 중") + "</p>",
-      '<div class="actions">' + roomButton + transferButton + "</div>",
-      reportSection, "</section>"
+      actions,
+      isMe ? "" : reportForm("user", user.id),
+      "</section>",
+      reviewForm,
+      reviewSection
     ].join("")));
+  } catch (e) { next(e); }
+});
+
+app.post("/users/:id/block", requireAuth, async function (req, res, next) {
+  try {
+    const myId = req.session.user.id;
+    const targetId = Number(req.params.id);
+    if (myId === targetId) return res.redirect("/users/" + targetId);
+    const existing = await queryOne(
+      "SELECT id FROM user_blocks WHERE blocker_id = $1 AND blocked_id = $2", [myId, targetId]
+    );
+    if (existing) {
+      await pool.query("DELETE FROM user_blocks WHERE blocker_id = $1 AND blocked_id = $2", [myId, targetId]);
+      req.session.success = "차단을 해제했습니다.";
+    } else {
+      await pool.query("INSERT INTO user_blocks (blocker_id, blocked_id) VALUES ($1, $2)", [myId, targetId]);
+      req.session.success = "사용자를 차단했습니다.";
+    }
+    res.redirect("/users/" + targetId);
+  } catch (e) { next(e); }
+});
+
+app.get("/my-blocks", requireAuth, async function (req, res, next) {
+  try {
+    const blocks = await query(
+      `SELECT u.id, u.display_name AS "displayName", u.username, ub.created_at AS "blockedAt"
+       FROM user_blocks ub JOIN users u ON u.id = ub.blocked_id
+       WHERE ub.blocker_id = $1 ORDER BY ub.created_at DESC`,
+      [req.session.user.id]
+    );
+    res.send(layout(req, "차단 목록", [
+      '<section class="section-head"><h1>차단 목록</h1></section>',
+      '<div class="stack">',
+      blocks.length ? blocks.map(function (u) {
+        return '<article class="card inline-card"><div>' +
+          '<strong><a href="/users/' + u.id + '">' + h(u.displayName) + '</a></strong>' +
+          '<p>@' + h(u.username) + '</p>' +
+          '<small>차단일: ' + formatKST(u.blockedAt) + '</small></div>' +
+          '<form method="post" action="/users/' + u.id + '/block" class="inline">' +
+          '<button type="submit">차단 해제</button></form>' +
+          '</article>';
+      }).join("") : '<p>차단한 사용자가 없습니다.</p>',
+      '</div>'
+    ].join("")));
+  } catch (e) { next(e); }
+});
+
+app.post("/reviews", requireAuth, async function (req, res, next) {
+  try {
+    const myId = req.session.user.id;
+    const revieweeId = Number(req.body.revieweeId);
+    const transferId = Number(req.body.transferId);
+    const rating = req.body.rating;
+    const content = (req.body.content || "").trim();
+    if (!revieweeId || !transferId || !["like", "dislike"].includes(rating)) {
+      req.session.error = "후기 정보가 올바르지 않습니다.";
+      return res.redirect("/users/" + revieweeId);
+    }
+    const transfer = await queryOne(
+      "SELECT id FROM transfers WHERE id = $1 AND sender_id = $2 AND receiver_id = $3",
+      [transferId, myId, revieweeId]
+    );
+    if (!transfer) {
+      req.session.error = "해당 거래 내역이 없습니다.";
+      return res.redirect("/users/" + revieweeId);
+    }
+    try {
+      await pool.query(
+        "INSERT INTO reviews (reviewer_id, reviewee_id, transfer_id, rating, content) VALUES ($1, $2, $3, $4, $5)",
+        [myId, revieweeId, transferId, rating, content]
+      );
+    } catch (err) {
+      if (err.code === "23505") {
+        req.session.error = "이미 해당 거래에 후기를 남겼습니다.";
+        return res.redirect("/users/" + revieweeId);
+      }
+      throw err;
+    }
+    req.session.success = "후기가 등록되었습니다.";
+    res.redirect("/users/" + revieweeId);
   } catch (e) { next(e); }
 });
 
 app.get("/mypage", requireAuth, function (req, res) {
   const user = req.session.user;
+  const suspStatus = user.suspendedUntil && new Date(user.suspendedUntil) > new Date()
+    ? suspendLabel(user.suspendedUntil)
+    : null;
   res.send(layout(req, "마이페이지", [
     '<section class="card"><h1>마이페이지</h1>',
+    (user.warnings > 0 || suspStatus)
+      ? '<div class="notice warn"><strong>계정 상태</strong>' +
+        (user.warnings > 0 ? " · 경고 " + user.warnings + "회" : "") +
+        (suspStatus ? " · " + suspStatus : "") + "</div>"
+      : "",
     '<form method="post" action="/mypage" class="stack">',
     '<label>닉네임<input name="displayName" value="' + h(user.displayName) + '" required /></label>',
     '<label>소개글<textarea name="bio" rows="4">' + h(user.bio || "") + "</textarea></label>",
@@ -1169,7 +1382,8 @@ app.get("/my-products", requireAuth, async function (req, res, next) {
           "<p>" + amount(product.price) + "</p>" +
           "<p>" + h(product.category) + " · " + h(product.region) + " · " + h(product.status) + "</p>" +
           "<p>" + (product.isBlocked ? "차단됨" : "노출 중") + "</p>" +
-          '<form method="post" action="/products/' + product.id + '/delete"><button type="submit">삭제</button></form>' +
+          '<div class="actions"><a class="button" href="/products/' + product.id + '/edit">수정</a>' +
+          '<form method="post" action="/products/' + product.id + '/delete" class="inline"><button type="submit">삭제</button></form></div>' +
           "</div></article>";
       }).join("") || "<p>등록한 상품이 없습니다.</p>",
       "</div>"
@@ -1186,6 +1400,68 @@ app.post("/products/:id/delete", requireAuth, async function (req, res, next) {
   } catch (e) { next(e); }
 });
 
+app.get("/products/:id/edit", requireAuth, async function (req, res, next) {
+  try {
+    const product = await queryOne(
+      "SELECT id, name, description, price, category, region, status FROM products WHERE id = $1 AND seller_id = $2",
+      [Number(req.params.id), req.session.user.id]
+    );
+    if (!product) {
+      req.session.error = "상품을 찾을 수 없거나 수정 권한이 없습니다.";
+      return res.redirect("/my-products");
+    }
+    const statusOptions = ["판매중", "예약중", "판매완료"];
+    res.send(layout(req, "상품 수정", [
+      '<section class="card"><h1>상품 수정</h1>',
+      '<form method="post" action="/products/' + product.id + '/edit" class="stack">',
+      '<label>상품명<input name="name" value="' + h(product.name) + '" required /></label>',
+      '<label>설명<textarea name="description" rows="5" required>' + h(product.description) + '</textarea></label>',
+      '<label>가격<input name="price" type="number" min="0" value="' + product.price + '" required /></label>',
+      '<label>카테고리<select name="category">' +
+        ["전자기기","가구","도서","의류","기타"].map(function(c){
+          return '<option' + (product.category === c ? " selected" : "") + ">" + c + "</option>";
+        }).join("") + "</select></label>",
+      '<label>지역<select name="region" required><option value="">선택</option>' +
+        REGIONS.map(function(r){
+          return '<option' + (product.region === r ? " selected" : "") + ">" + r + "</option>";
+        }).join("") + "</select></label>",
+      '<label>판매 상태<select name="status">' +
+        statusOptions.map(function(s){
+          return '<option' + (product.status === s ? " selected" : "") + ">" + s + "</option>";
+        }).join("") + "</select></label>",
+      '<div class="actions"><button type="submit" class="primary">저장</button><a class="button" href="/products/' + product.id + '">취소</a></div>',
+      "</form></section>"
+    ].join("")));
+  } catch (e) { next(e); }
+});
+
+app.post("/products/:id/edit", requireAuth, async function (req, res, next) {
+  try {
+    const id = Number(req.params.id);
+    const product = await queryOne("SELECT id FROM products WHERE id = $1 AND seller_id = $2", [id, req.session.user.id]);
+    if (!product) {
+      req.session.error = "상품을 찾을 수 없거나 수정 권한이 없습니다.";
+      return res.redirect("/my-products");
+    }
+    const name = (req.body.name || "").trim();
+    const description = (req.body.description || "").trim();
+    const price = Number(req.body.price || 0);
+    const category = (req.body.category || "기타").trim();
+    const region = (req.body.region || "미지정").trim();
+    const status = (req.body.status || "판매중").trim();
+    if (!name || !description) {
+      req.session.error = "상품명과 설명을 입력해주세요.";
+      return res.redirect("/products/" + id + "/edit");
+    }
+    await pool.query(
+      "UPDATE products SET name=$1, description=$2, price=$3, category=$4, region=$5, status=$6 WHERE id=$7",
+      [name, description, price, category, region, status, id]
+    );
+    req.session.success = "상품이 수정되었습니다.";
+    res.redirect("/products/" + id);
+  } catch (e) { next(e); }
+});
+
 app.get("/products/:id", async function (req, res, next) {
   try {
     const product = await queryOne(
@@ -1198,10 +1474,12 @@ app.get("/products/:id", async function (req, res, next) {
     if (!product || product.isBlocked) {
       return res.status(404).send(layout(req, "상품 없음", "<p>상품을 찾을 수 없습니다.</p>"));
     }
-    const me = req.session.user && req.session.user.id !== product.sellerId;
-    const chatButton = me ? '<a class="button primary" href="/chat/direct/' + await getDirectRoomId(req.session.user.id, product.sellerId) + '">판매자와 1:1 채팅</a>' : "";
+    const isOwner = req.session.user && req.session.user.id === product.sellerId;
+    const me = req.session.user && !isOwner;
+    const chatButton = me ? '<a class="button primary" href="/chat/start/' + product.sellerId + '">판매자와 1:1 채팅</a>' : "";
     const transferButton = me ? '<a class="button" href="/wallet?receiver=' + product.sellerId + '">판매자에게 송금</a>' : "";
-    const reportSection = req.session.user ? reportForm("product", product.id) : "";
+    const editButton = isOwner ? '<a class="button" href="/products/' + product.id + '/edit">수정</a>' : "";
+    const reportSection = me ? reportForm("product", product.id) : "";
     res.send(layout(req, product.name, [
       '<section class="detail">',
       '<img class="detail-image" src="' + h(product.imagePath) + '" alt="' + h(product.name) + '" />',
@@ -1213,7 +1491,7 @@ app.get("/products/:id", async function (req, res, next) {
       "<p>지역: " + h(product.region) + "</p>",
       "<p>상태: " + h(product.status) + "</p>",
       "<p>" + h(product.description) + "</p>",
-      '<div class="actions">' + chatButton + transferButton + "</div>",
+      '<div class="actions">' + chatButton + transferButton + editButton + "</div>",
       reportSection, "</div></section>"
     ].join("")));
   } catch (e) { next(e); }
@@ -1305,9 +1583,18 @@ app.get("/chat", requireAuth, async function (req, res, next) {
 
 app.get("/chat/start/:userId", requireAuth, async function (req, res, next) {
   try {
+    const myId = req.session.user.id;
     const targetId = Number(req.params.userId);
-    if (!targetId || targetId === req.session.user.id) return res.redirect("/chat");
-    const roomId = await getDirectRoomId(req.session.user.id, targetId);
+    if (!targetId || targetId === myId) return res.redirect("/chat");
+    const blockCheck = await queryOne(
+      "SELECT id FROM user_blocks WHERE (blocker_id=$1 AND blocked_id=$2) OR (blocker_id=$2 AND blocked_id=$1)",
+      [myId, targetId]
+    );
+    if (blockCheck) {
+      req.session.error = "차단 관계에 있어 채팅을 시작할 수 없습니다.";
+      return res.redirect("/chat");
+    }
+    const roomId = await getDirectRoomId(myId, targetId);
     res.redirect("/chat/direct/" + roomId);
   } catch (e) { next(e); }
 });
@@ -1380,8 +1667,9 @@ app.get("/admin", requireAuth, requireAdmin, async function (req, res, next) {
       reports: parseInt(mr.count), messages: parseInt(mm.count), transfers: parseInt(mt.count)
     };
     const users = await query(
-      `SELECT id, username, display_name AS "displayName", balance, is_dormant AS "isDormant", is_admin AS "isAdmin"
-       FROM users ORDER BY created_at DESC LIMIT 30`
+      `SELECT id, username, display_name AS "displayName", balance, is_dormant AS "isDormant", is_admin AS "isAdmin",
+       warnings, suspended_until AS "suspendedUntil"
+       FROM users ORDER BY created_at DESC LIMIT 50`
     );
     const products = await query(
       `SELECT p.id, p.name, p.price, p.status, p.is_blocked AS "isBlocked", u.display_name AS "sellerName"
@@ -1416,10 +1704,22 @@ app.get("/admin", requireAuth, requireAdmin, async function (req, res, next) {
       '<section class="grid admin-grid">',
       '<article class="card"><h2>유저 관리</h2><div class="stack">' +
         users.map(function (u) {
-          return '<form method="post" action="/admin/users/' + u.id + '/toggle-dormant" class="row">' +
-            "<span>" + h(u.displayName) + " (@" + h(u.username) + ") · " + amount(u.balance) + " · " +
-            (u.isAdmin ? "관리자" : "일반") + " · " + (u.isDormant ? "휴면" : "활동") + "</span>" +
-            "<button type=\"submit\">" + (u.isDormant ? "복구" : "휴면 전환") + "</button></form>";
+          const statusText = u.isDormant ? "영구정지" : suspendLabel(u.suspendedUntil);
+          return '<div class="subcard"><div class="row">' +
+            "<span>" + h(u.displayName) + " (@" + h(u.username) + ") · " + amount(u.balance) +
+            " · " + (u.isAdmin ? "관리자" : "일반") +
+            " · <strong>" + statusText + "</strong>" +
+            " · 경고 " + (u.warnings || 0) + "회</span></div>" +
+            '<div class="actions">' +
+            '<form method="post" action="/admin/users/' + u.id + '/suspend" class="inline">' +
+            '<select name="duration"><option value="0">정지 해제</option>' +
+            '<option value="1">1일</option><option value="3">3일</option>' +
+            '<option value="7">7일</option><option value="30">30일</option>' +
+            '<option value="365">1년</option></select>' +
+            '<button type="submit">적용</button></form>' +
+            '<form method="post" action="/admin/users/' + u.id + '/toggle-dormant" class="inline">' +
+            '<button type="submit">' + (u.isDormant ? "영구정지 해제" : "영구정지") + '</button></form>' +
+            '</div></div>';
         }).join("") + "</div></article>",
       '<article class="card"><h2>상품 관리</h2><div class="stack">' +
         products.map(function (product) {
@@ -1451,12 +1751,40 @@ app.get("/admin", requireAuth, requireAdmin, async function (req, res, next) {
   } catch (e) { next(e); }
 });
 
+app.post("/admin/users/:id/suspend", requireAuth, requireAdmin, async function (req, res, next) {
+  try {
+    const days = Number(req.body.duration || 0);
+    const uid = Number(req.params.id);
+    if (days === 0) {
+      await pool.query("UPDATE users SET suspended_until = NULL WHERE id = $1", [uid]);
+      req.session.success = "정지를 해제했습니다.";
+    } else {
+      const until = new Date(Date.now() + days * 86400000);
+      await pool.query("UPDATE users SET suspended_until = $1 WHERE id = $2", [until.toISOString(), uid]);
+      const notifMsg = days + "일 정지 처리되었습니다. (" + until.toLocaleDateString("ko-KR") + " 해제)";
+      await pool.query(
+        "INSERT INTO notifications (user_id, type, message, link) VALUES ($1, 'suspend', $2, '/mypage')",
+        [uid, notifMsg]
+      );
+      io.to("user:" + uid).emit("notification", { message: notifMsg, link: "/mypage" });
+      req.session.success = days + "일 정지를 적용했습니다.";
+    }
+    res.redirect("/admin");
+  } catch (e) { next(e); }
+});
+
 app.post("/admin/users/:id/toggle-dormant", requireAuth, requireAdmin, async function (req, res, next) {
   try {
     const user = await queryOne("SELECT is_dormant AS \"isDormant\" FROM users WHERE id = $1", [Number(req.params.id)]);
     if (user) {
       await pool.query("UPDATE users SET is_dormant = $1 WHERE id = $2",
         [user.isDormant ? 0 : 1, Number(req.params.id)]);
+      if (!user.isDormant) {
+        await pool.query(
+          "INSERT INTO notifications (user_id, type, message, link) VALUES ($1, 'suspend', $2, '/mypage')",
+          [Number(req.params.id), "계정이 영구 정지되었습니다. 관리자에게 문의하세요.", "/mypage"]
+        );
+      }
     }
     req.session.success = "유저 상태를 변경했습니다.";
     res.redirect("/admin");
