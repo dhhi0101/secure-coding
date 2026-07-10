@@ -580,7 +580,6 @@ app.get("/login", function (req, res) {
     "<label>비밀번호<input type=\"password\" name=\"password\" required /></label>",
     "<button type=\"submit\">로그인</button>",
     "</form>",
-    "<p>기본 관리자: admin / admin1234</p>",
     "</section>"
   ].join("")));
 });
