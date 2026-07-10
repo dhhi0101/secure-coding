@@ -472,12 +472,49 @@ app.get("/", async function (req, res, next) {
     );
     const p = await queryOne("SELECT COUNT(*) AS count FROM products WHERE is_blocked = 0");
     const productCount = parseInt(p.count);
+    const authModal = req.session.user ? "" : [
+      '<div id="auth-modal" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeAuthModal()">',
+      '<div class="modal-box">',
+      '<button class="modal-close" onclick="closeAuthModal()">&#10005;</button>',
+      '<div class="auth-tabs">',
+      '<button class="auth-tab active" id="tab-login" onclick="switchTab(\'login\')">로그인</button>',
+      '<button class="auth-tab" id="tab-register" onclick="switchTab(\'register\')">회원가입</button>',
+      '</div>',
+      '<div id="pane-login" class="auth-pane">',
+      '<form method="post" action="/login" class="stack">',
+      '<label>아이디<input name="username" required autocomplete="username"/></label>',
+      '<label>비밀번호<input type="password" name="password" required autocomplete="current-password"/></label>',
+      '<button type="submit" class="button primary" style="width:100%">로그인</button>',
+      '</form>',
+      '</div>',
+      '<div id="pane-register" class="auth-pane" style="display:none">',
+      '<form method="post" action="/register" class="stack">',
+      '<label>아이디<input name="username" required placeholder="영문 소문자, 숫자만" autocomplete="username"/><small class="hint">영문 소문자(a-z)와 숫자(0-9)만 사용 가능합니다.</small></label>',
+      '<label>닉네임<input name="displayName" required placeholder="다른 사람에게 보이는 이름"/></label>',
+      '<label>비밀번호<input type="password" name="password" required placeholder="영문, 숫자, 특수문자" autocomplete="new-password"/><small class="hint">영문(대소문자), 숫자, 특수문자만 사용 가능합니다.</small></label>',
+      '<label>소개글<textarea name="bio" rows="3"></textarea></label>',
+      '<button type="submit" class="button primary" style="width:100%">가입하기</button>',
+      '</form>',
+      '</div>',
+      '</div></div>',
+      '<script>',
+      'function openAuthModal(tab){document.getElementById("auth-modal").style.display="flex";switchTab(tab||"login");}',
+      'function closeAuthModal(){document.getElementById("auth-modal").style.display="none";}',
+      'function switchTab(t){["login","register"].forEach(function(x){document.getElementById("pane-"+x).style.display=x===t?"block":"none";document.getElementById("tab-"+x).classList.toggle("active",x===t);});}',
+      'document.addEventListener("keydown",function(e){if(e.key==="Escape")closeAuthModal();});',
+      '</script>'
+    ].join("");
+
     res.send(layout(req, "UsedHub", [
+      authModal,
       '<section class="hero"><div>',
       "<h1>중고거래 플랫폼</h1>",
       "<p>현재 <strong>" + productCount + "개</strong>의 상품이 등록되어 있습니다.</p>",
       '<div class="actions"><a class="button primary" href="/products">상품 둘러보기</a>' +
-        (req.session.user ? '<a class="button" href="/wallet">송금하기</a>' : '<a class="button" href="/register">회원가입</a>') + "</div>",
+        (req.session.user
+          ? '<a class="button" href="/wallet">송금하기</a>'
+          : '<button class="button" onclick="openAuthModal(\'login\')">로그인</button><button class="button" onclick="openAuthModal(\'register\')">회원가입</button>'
+        ) + "</div>",
       "</div></section>",
       "<section><h2>최근 등록 상품</h2><div class=\"grid\">" +
         (featured.map(productCard).join("") || "<p>등록된 상품이 없습니다.</p>") + "</div></section>"
