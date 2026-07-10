@@ -470,26 +470,15 @@ app.get("/", async function (req, res, next) {
        JOIN users u ON u.id = p.seller_id
        WHERE p.is_blocked = 0 ORDER BY p.created_at DESC LIMIT 6`
     );
-    const [u, p, m, t] = await Promise.all([
-      queryOne("SELECT COUNT(*) AS count FROM users"),
-      queryOne("SELECT COUNT(*) AS count FROM products WHERE is_blocked = 0"),
-      queryOne("SELECT COUNT(*) AS count FROM messages"),
-      queryOne("SELECT COUNT(*) AS count FROM transfers")
-    ]);
-    const stats = { users: parseInt(u.count), products: parseInt(p.count), messages: parseInt(m.count), transfers: parseInt(t.count) };
+    const p = await queryOne("SELECT COUNT(*) AS count FROM products WHERE is_blocked = 0");
+    const productCount = parseInt(p.count);
     res.send(layout(req, "UsedHub", [
       '<section class="hero"><div>',
       "<h1>중고거래 플랫폼</h1>",
-      "<p>회원 관리, 상품 거래, 전체/1대1 채팅, 신고 차단, 송금, 관리자 통합 관리 기능을 포함한 실제 사용형 과제 구현입니다.</p>",
+      "<p>현재 <strong>" + productCount + "개</strong>의 상품이 등록되어 있습니다.</p>",
       '<div class="actions"><a class="button primary" href="/products">상품 둘러보기</a>' +
         (req.session.user ? '<a class="button" href="/wallet">송금하기</a>' : '<a class="button" href="/register">회원가입</a>') + "</div>",
       "</div></section>",
-      '<section class="stats-grid">',
-      '<article class="card stat"><strong>' + stats.users + "</strong><span>사용자</span></article>",
-      '<article class="card stat"><strong>' + stats.products + "</strong><span>상품</span></article>",
-      '<article class="card stat"><strong>' + stats.messages + "</strong><span>메시지</span></article>",
-      '<article class="card stat"><strong>' + stats.transfers + "</strong><span>송금</span></article>",
-      "</section>",
       "<section><h2>최근 등록 상품</h2><div class=\"grid\">" +
         (featured.map(productCard).join("") || "<p>등록된 상품이 없습니다.</p>") + "</div></section>"
     ].join("")));
