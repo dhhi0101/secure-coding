@@ -703,6 +703,7 @@ app.get("/users/:id", requireAuth, async function (req, res, next) {
     const user = await currentUserRow(Number(req.params.id));
     if (!user) return res.status(404).send(layout(req, "사용자 없음", "<p>사용자를 찾을 수 없습니다.</p>"));
     const isMe = myId === user.id;
+    const focusTransferId = Number(req.query.review || 0);
 
     const [blockRow, reviewStats, reviewList, writableTransfers] = await Promise.all([
       isMe ? null : queryOne(
@@ -746,10 +747,12 @@ app.get("/users/:id", requireAuth, async function (req, res, next) {
     ].join("");
 
     const reviewForm = writableTransfers.length ? [
-      '<section class="card"><h2>거래 후기 작성</h2>',
+      '<section class="card" id="review-section"><h2>거래 후기 작성</h2>',
       '<p class="hint">송금한 거래에 대해 후기를 남길 수 있습니다.</p>',
       writableTransfers.map(function (t) {
-        return '<form method="post" action="/reviews" class="stack review-form">' +
+        const isFocused = focusTransferId && t.id === focusTransferId;
+        return '<form method="post" action="/reviews" class="stack review-form' + (isFocused ? " review-focus" : "") + '"' +
+          (isFocused ? ' id="review-focus"' : '') + '>' +
           '<input type="hidden" name="revieweeId" value="' + user.id + '" />' +
           '<input type="hidden" name="transferId" value="' + t.id + '" />' +
           '<p class="hint">송금 ' + amount(t.amount) + ' · ' + formatKST(t.createdAt) + '</p>' +
@@ -760,6 +763,7 @@ app.get("/users/:id", requireAuth, async function (req, res, next) {
           '<label>후기<textarea name="content" rows="3" placeholder="거래 경험을 자유롭게 적어주세요 (선택)"></textarea></label>' +
           '<button type="submit" class="primary">후기 등록</button></form>';
       }).join("") +
+      (focusTransferId ? '<script>var _rf=document.getElementById("review-focus");if(_rf)_rf.scrollIntoView({behavior:"smooth",block:"center"});</script>' : '') +
       '</section>'
     ].join("") : "";
 
@@ -1087,7 +1091,8 @@ app.get("/wallet", requireAuth, async function (req, res, next) {
     const transfers = await query(
       `SELECT t.id, t.amount, t.note, t.created_at AS "createdAt",
        sender.display_name AS "senderName", receiver.display_name AS "receiverName",
-       t.sender_id AS "senderId", t.receiver_id AS "receiverId"
+       t.sender_id AS "senderId", t.receiver_id AS "receiverId",
+       EXISTS (SELECT 1 FROM reviews rv WHERE rv.reviewer_id = $1 AND rv.transfer_id = t.id) AS "hasReview"
        FROM transfers t
        JOIN users sender ON sender.id = t.sender_id
        JOIN users receiver ON receiver.id = t.receiver_id
@@ -1195,11 +1200,18 @@ app.get("/wallet", requireAuth, async function (req, res, next) {
       "</article>",
       '<article class="card"><h2>최근 송금 내역</h2><div class="stack">' +
         (transfers.map(function (item) {
-          const dir = item.senderId === req.session.user.id ? "보냄" : "받음";
+          const myId = req.session.user.id;
+          const isSender = item.senderId === myId;
+          const dir = isSender ? "보냄" : "받음";
+          const reviewBtn = isSender && !item.hasReview
+            ? '<a class="button primary" href="/users/' + item.receiverId + '?review=' + item.id + '">후기 남기기</a>'
+            : (isSender && item.hasReview ? '<span class="badge muted">후기 완료</span>' : "");
           return '<div class="subcard"><strong>' + dir + " · " + amount(item.amount) + "</strong>" +
             "<span>" + h(item.senderName) + " → " + h(item.receiverName) + "</span>" +
             "<span>" + h(item.note || "메모 없음") + "</span>" +
-            "<small>" + formatKST(item.createdAt) + "</small></div>";
+            "<small>" + formatKST(item.createdAt) + "</small>" +
+            (reviewBtn ? '<div style="margin-top:8px">' + reviewBtn + '</div>' : "") +
+            "</div>";
         }).join("") || "<p>송금 내역이 없습니다.</p>") + "</div></article>",
       "</section>"
     ].join("")));
