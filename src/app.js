@@ -396,6 +396,7 @@ function chatPage(title, roomType, roomId, messages, currentUserId, partnerLastR
     '  div.innerHTML = nameEl + \'<div class="bubble"><span>\' + safe(m.content) + "</span><small>" + fmtDate(m.createdAt) + "</small></div>" + readEl;',
     "  messagesEl.appendChild(div);",
     "  messagesEl.scrollTop = messagesEl.scrollHeight;",
+    '  if(!isMine && chatConfig.roomType==="direct"){socket.emit("mark-read",{roomId:chatConfig.roomId});}',
     "});",
     'socket.on("messages-read", function() {',
     '  document.querySelectorAll(".unread-marker").forEach(function(el){el.className="read-marker";el.textContent="읽음";});',
@@ -1507,6 +1508,23 @@ io.on("connection", function (socket) {
         }
       } catch (_e) { /* ignore */ }
     }
+  });
+
+  socket.on("mark-read", async function (payload) {
+    const su = socket.request.session && socket.request.session.user;
+    if (!su) return;
+    try {
+      const roomId = Number(payload.roomId);
+      const room = await queryOne("SELECT * FROM direct_rooms WHERE id = $1", [roomId]);
+      if (!room || [room.user_a_id, room.user_b_id].indexOf(su.id) === -1) return;
+      const isA = room.user_a_id === su.id;
+      await pool.query(
+        `UPDATE direct_rooms SET ${isA ? "user_a_last_read" : "user_b_last_read"} = $1 WHERE id = $2`,
+        [new Date().toISOString(), roomId]
+      );
+      const partnerId = isA ? room.user_b_id : room.user_a_id;
+      io.to("user:" + partnerId).emit("messages-read");
+    } catch (_e) {}
   });
 
   socket.on("chat-message", async function (payload) {
