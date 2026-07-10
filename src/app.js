@@ -470,13 +470,6 @@ app.get("/", async function (req, res, next) {
        JOIN users u ON u.id = p.seller_id
        WHERE p.is_blocked = 0 ORDER BY p.created_at DESC LIMIT 6`
     );
-    const [u, p, m, t] = await Promise.all([
-      queryOne("SELECT COUNT(*) AS count FROM users"),
-      queryOne("SELECT COUNT(*) AS count FROM products WHERE is_blocked = 0"),
-      queryOne("SELECT COUNT(*) AS count FROM messages"),
-      queryOne("SELECT COUNT(*) AS count FROM transfers")
-    ]);
-    const stats = { users: parseInt(u.count), products: parseInt(p.count), messages: parseInt(m.count), transfers: parseInt(t.count) };
     res.send(layout(req, "UsedHub", [
       '<section class="hero"><div>',
       "<h1>중고거래 플랫폼</h1>",
@@ -484,12 +477,6 @@ app.get("/", async function (req, res, next) {
       '<div class="actions"><a class="button primary" href="/products">상품 둘러보기</a>' +
         (req.session.user ? '<a class="button" href="/wallet">송금하기</a>' : '<a class="button" href="/register">회원가입</a>') + "</div>",
       "</div></section>",
-      '<section class="stats-grid">',
-      '<article class="card stat"><strong>' + stats.users + "</strong><span>사용자</span></article>",
-      '<article class="card stat"><strong>' + stats.products + "</strong><span>상품</span></article>",
-      '<article class="card stat"><strong>' + stats.messages + "</strong><span>메시지</span></article>",
-      '<article class="card stat"><strong>' + stats.transfers + "</strong><span>송금</span></article>",
-      "</section>",
       "<section><h2>최근 등록 상품</h2><div class=\"grid\">" +
         (featured.map(productCard).join("") || "<p>등록된 상품이 없습니다.</p>") + "</div></section>"
     ].join("")));
