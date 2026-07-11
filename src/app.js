@@ -1623,7 +1623,14 @@ app.get("/chat", requireAuth, async function (req, res, next) {
           CASE WHEN dr.user_a_id = $1 THEN ub.id ELSE ua.id END AS "partnerId",
           CASE WHEN dr.user_a_id = $1 THEN ub.username ELSE ua.username END AS "partnerUsername",
           (SELECT content FROM messages WHERE room_type='direct' AND room_id=dr.id ORDER BY id DESC LIMIT 1) AS "lastMessage",
-          (SELECT created_at FROM messages WHERE room_type='direct' AND room_id=dr.id ORDER BY id DESC LIMIT 1) AS "lastAt"
+          (SELECT created_at FROM messages WHERE room_type='direct' AND room_id=dr.id ORDER BY id DESC LIMIT 1) AS "lastAt",
+          (SELECT COUNT(*) FROM messages m
+           WHERE m.room_type='direct' AND m.room_id=dr.id AND m.sender_id != $1
+             AND m.created_at > COALESCE(
+               CASE WHEN dr.user_a_id=$1 THEN dr.user_a_last_read ELSE dr.user_b_last_read END,
+               '1970-01-01'
+             )
+          ) AS "unreadCount"
         FROM direct_rooms dr
         JOIN users ua ON ua.id = dr.user_a_id
         JOIN users ub ON ub.id = dr.user_b_id
@@ -1637,13 +1644,20 @@ app.get("/chat", requireAuth, async function (req, res, next) {
         '<section class="card"><h2>1:1 채팅 목록</h2>',
         '<div class="stack">',
         rooms.length ? rooms.map(function (r) {
-          return '<a href="/chat/direct/' + r.id + '" class="dm-item">' +
+          const unread = parseInt(r.unreadCount) || 0;
+          const badge = unread > 0
+            ? '<span class="dm-unread-badge">' + (unread > 99 ? '99+' : unread) + '</span>'
+            : '';
+          return '<a href="/chat/direct/' + r.id + '" class="dm-item' + (unread > 0 ? ' dm-item-unread' : '') + '">' +
             '<div class="avatar">' + h(r.partnerName).charAt(0) + '</div>' +
             '<div class="dm-item-info">' +
             '<strong>' + h(r.partnerName) + '</strong>' +
             '<span class="last-msg">@' + h(r.partnerUsername) + (r.lastMessage ? ' · ' + h(r.lastMessage) : '') + '</span>' +
             '</div>' +
-            (r.lastAt ? '<small>' + formatKST(r.lastAt) + '</small>' : "") +
+            '<div class="dm-item-meta">' +
+            (r.lastAt ? '<small>' + formatKST(r.lastAt) + '</small>' : '') +
+            badge +
+            '</div>' +
             '</a>';
         }).join("") : '<p style="color:var(--muted);text-align:center;padding:24px 0">아직 1:1 채팅이 없습니다.</p>',
         '</div></section>'
