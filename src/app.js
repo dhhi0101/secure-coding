@@ -412,15 +412,8 @@ function safeBack(req, fallback) {
   return fallback || "/";
 }
 
-function reportForm(targetType, targetId) {
-  return [
-    '<form method="post" action="/reports" class="stack report-form">',
-    '<input type="hidden" name="targetType" value="' + h(targetType) + '" />',
-    '<input type="hidden" name="targetId" value="' + Number(targetId) + '" />',
-    "<label>신고 사유<textarea name=\"reason\" rows=\"3\" required></textarea></label>",
-    "<button type=\"submit\">신고하기</button>",
-    "</form>"
-  ].join("");
+function reportButton(targetType, targetId) {
+  return '<a class="button" href="/report?type=' + h(targetType) + '&id=' + Number(targetId) + '">신고하기</a>';
 }
 
 function productCard(product) {
@@ -922,7 +915,7 @@ app.get("/users/:id", requireAuth, async function (req, res, next) {
       isMe ? "<p>잔액: " + amount(user.balance) + "</p>" : "",
       "<p>상태: " + (user.isDormant ? "휴면 계정" : "활동 중") + "</p>",
       actions,
-      isMe ? "" : reportForm("user", user.id),
+      isMe ? "" : reportButton("user", user.id),
       "</section>",
       reviewForm,
       reviewSection
@@ -1655,7 +1648,7 @@ app.get("/products/:id", async function (req, res, next) {
     const chatButton = me ? '<a class="button primary" href="/chat/start/' + product.sellerId + '">판매자와 1:1 채팅</a>' : "";
     const transferButton = me ? '<a class="button" href="/wallet?receiver=' + product.sellerId + '">판매자에게 송금</a>' : "";
     const editButton = isOwner ? '<a class="button" href="/products/' + product.id + '/edit">수정</a>' : "";
-    const reportSection = me ? reportForm("product", product.id) : "";
+    const reportSection = me ? reportButton("product", product.id) : "";
     res.send(layout(req, product.name, [
       '<section class="detail">',
       '<img class="detail-image" src="' + h(product.imagePath) + '" alt="' + h(product.name) + '" />',
@@ -1669,6 +1662,39 @@ app.get("/products/:id", async function (req, res, next) {
       "<p>" + h(product.description) + "</p>",
       '<div class="actions">' + chatButton + transferButton + editButton + "</div>",
       reportSection, "</div></section>"
+    ].join("")));
+  } catch (e) { next(e); }
+});
+
+app.get("/report", requireAuth, async function (req, res, next) {
+  try {
+    const targetType = req.query.type;
+    const targetId = Number(req.query.id);
+    if ((targetType !== "user" && targetType !== "product") || !targetId) {
+      req.session.error = "잘못된 신고 대상입니다.";
+      return res.redirect("/");
+    }
+    let targetName = "";
+    if (targetType === "user") {
+      const u = await queryOne("SELECT display_name FROM users WHERE id = $1", [targetId]);
+      targetName = u ? u.display_name : String(targetId);
+    } else {
+      const p = await queryOne("SELECT name FROM products WHERE id = $1", [targetId]);
+      targetName = p ? p.name : String(targetId);
+    }
+    const label = targetType === "user" ? "유저" : "상품";
+    res.send(layout(req, "신고하기", [
+      '<section class="card" style="max-width:480px;margin:2rem auto;">',
+      "<h1>신고하기</h1>",
+      "<p>" + label + ": <strong>" + h(targetName) + "</strong></p>",
+      '<form method="post" action="/reports" class="stack">',
+      '<input type="hidden" name="targetType" value="' + h(targetType) + '" />',
+      '<input type="hidden" name="targetId" value="' + targetId + '" />',
+      '<label>신고 사유<textarea name="reason" rows="4" required placeholder="신고 사유를 입력해주세요."></textarea></label>',
+      '<div class="actions"><button type="submit" class="button primary">신고 접수</button>',
+      '<a class="button" href="' + safeBack(req, "/") + '">취소</a></div>',
+      "</form>",
+      "</section>"
     ].join("")));
   } catch (e) { next(e); }
 });
@@ -1697,7 +1723,8 @@ app.post("/reports", requireAuth, async function (req, res, next) {
     await enforceModeration(targetType, targetId);
     await refreshSessionUser(req);
     req.session.success = "신고가 접수되었습니다.";
-    res.redirect(safeBack(req, "/"));
+    const backUrl = targetType === "user" ? "/users/" + targetId : "/products/" + targetId;
+    res.redirect(backUrl);
   } catch (e) { next(e); }
 });
 
