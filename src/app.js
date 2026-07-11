@@ -11,13 +11,21 @@ const { Pool } = require("pg");
 const { createClient } = require("@supabase/supabase-js");
 const ws = require("ws");
 const { Server } = require("socket.io");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
 const PORT = process.env.PORT || 3000;
-const SESSION_SECRET = process.env.SESSION_SECRET || "dev-secret-change-me";
+const SESSION_SECRET = process.env.SESSION_SECRET || (function () {
+  if (process.env.NODE_ENV === "production") {
+    console.error("[보안] SESSION_SECRET 환경변수가 설정되지 않았습니다. 서버를 종료합니다.");
+    process.exit(1);
+  }
+  return "dev-secret-change-me";
+}());
 const DATABASE_URL = process.env.DATABASE_URL;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -188,6 +196,7 @@ async function uploadImage(file) {
 
 const upload = multer({
   storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // ⑤ 파일 크기 5MB 제한
   fileFilter: function (_req, file, cb) {
     if (file.mimetype && file.mimetype.startsWith("image/")) {
       cb(null, true);
@@ -197,11 +206,41 @@ const upload = multer({
   }
 });
 
+const isProduction = process.env.NODE_ENV === "production";
+
 const sessionMiddleware = session({
   secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
-  cookie: { httpOnly: true, sameSite: "lax" }
+  cookie: { httpOnly: true, sameSite: "lax", secure: isProduction } // ⑧ 프로덕션에서 secure
+});
+
+// ⑥ 보안 헤더 (helmet)
+app.use(helmet({
+  contentSecurityPolicy: false // 인라인 스크립트 사용 중이므로 CSP는 개별 설정
+}));
+app.use(function (_req, res, next) {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "SAMEORIGIN");
+  next();
+});
+
+// ② 로그인 rate limiting — IP당 10회/15분
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: "로그인 시도가 너무 많습니다. 15분 후 다시 시도해주세요.",
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+// ② PIN rate limiting — IP당 10회/15분
+const pinLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: "PIN 시도가 너무 많습니다. 15분 후 다시 시도해주세요.",
+  standardHeaders: true,
+  legacyHeaders: false
 });
 
 app.use(express.urlencoded({ extended: true }));
@@ -273,10 +312,11 @@ function layout(req, title, body) {
     '  var cfg=window._activeChatConfig;',
     '  if(cfg&&cfg.roomType==="direct") return;', // 같은 DM방이면 layout 레벨 토스트 안 띄움 (chatPage가 직접 처리)
     '});',
+    'function _esc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");}',
     'function showGlobalToast(msg,link){',
     '  if(window._activeChatConfig&&link&&link.indexOf("/chat/direct/"+window._activeChatConfig.roomId)!==-1) return;',
     '  var t=document.createElement("div");t.className="toast";',
-    '  t.innerHTML=\'<a href="\'+link+\'">\'+msg+"</a>";',
+    '  var a=document.createElement("a");a.href=_esc(link);a.textContent=msg;t.appendChild(a);',
     '  document.body.appendChild(t);',
     '  setTimeout(function(){t.classList.add("hide");setTimeout(function(){t.remove();},400);},4000);',
     '}',
@@ -361,6 +401,15 @@ async function enforceModeration(targetType, targetId) {
     );
     io.to("user:" + targetId).emit("notification", { message: notifMsg, link: "/mypage" });
   }
+}
+
+function safeBack(req, fallback) {
+  const ref = req.get("referer") || "";
+  try {
+    const url = new URL(ref);
+    if (url.host === req.get("host")) return url.pathname + url.search;
+  } catch (_) {}
+  return fallback || "/";
 }
 
 function reportForm(targetType, targetId) {
@@ -637,6 +686,22 @@ app.post("/register", async function (req, res, next) {
       req.session.error = "필수 항목을 모두 입력해주세요.";
       return res.redirect("/register");
     }
+    if (username.length > 30) {
+      req.session.error = "아이디는 30자 이하로 입력해주세요.";
+      return res.redirect("/register");
+    }
+    if (displayName.length > 30) {
+      req.session.error = "닉네임은 30자 이하로 입력해주세요.";
+      return res.redirect("/register");
+    }
+    if (password.length > 100) {
+      req.session.error = "비밀번호는 100자 이하로 입력해주세요.";
+      return res.redirect("/register");
+    }
+    if (bio.length > 300) {
+      req.session.error = "소개글은 300자 이하로 입력해주세요.";
+      return res.redirect("/register");
+    }
     if (!/^[a-z0-9]+$/.test(username)) {
       req.session.error = "아이디는 영문 소문자와 숫자만 사용할 수 있습니다.";
       return res.redirect("/register");
@@ -676,7 +741,7 @@ app.get("/login", function (req, res) {
   ].join("")));
 });
 
-app.post("/login", async function (req, res, next) {
+app.post("/login", loginLimiter, async function (req, res, next) {
   try {
     const username = (req.body.username || "").trim();
     const password = req.body.password || "";
@@ -701,12 +766,17 @@ app.post("/login", async function (req, res, next) {
       return res.redirect("/login");
     }
     await pool.query("UPDATE users SET last_seen = $1 WHERE id = $2", [new Date().toISOString(), user.id]);
-    req.session.user = {
+    const userData = {
       id: user.id, username: user.username, displayName: user.displayName,
       bio: user.bio, balance: user.balance, isDormant: user.isDormant, isAdmin: user.isAdmin
     };
-    req.session.success = "로그인되었습니다.";
-    res.redirect("/");
+    // ④ 세션 고정 방지 — 로그인 시 새 세션 ID 발급
+    req.session.regenerate(function (err) {
+      if (err) return next(err);
+      req.session.user = userData;
+      req.session.success = "로그인되었습니다.";
+      res.redirect("/");
+    });
   } catch (e) { next(e); }
 });
 
@@ -957,6 +1027,14 @@ app.post("/mypage", requireAuth, async function (req, res, next) {
     const password = req.body.password || "";
     if (!displayName) {
       req.session.error = "닉네임은 필수입니다.";
+      return res.redirect("/mypage");
+    }
+    if (displayName.length > 30) {
+      req.session.error = "닉네임은 30자 이하로 입력해주세요.";
+      return res.redirect("/mypage");
+    }
+    if (bio.length > 300) {
+      req.session.error = "소개글은 300자 이하로 입력해주세요.";
       return res.redirect("/mypage");
     }
     const dupName = await queryOne("SELECT id FROM users WHERE display_name = $1 AND id != $2", [displayName, req.session.user.id]);
@@ -1268,12 +1346,12 @@ app.get("/wallet", requireAuth, async function (req, res, next) {
   } catch (e) { next(e); }
 });
 
-app.post("/wallet/transfer", requireAuth, async function (req, res, next) {
+app.post("/wallet/transfer", requireAuth, pinLimiter, async function (req, res, next) {
   try {
     const senderId = req.session.user.id;
     const receiverId = Number(req.body.receiverId);
     const value = Number(req.body.amount);
-    const note = (req.body.note || "").trim();
+    const note = (req.body.note || "").trim().slice(0, 100);
     const pin = String(req.body.pin || "").trim();
     if (!receiverId || !Number.isFinite(value) || value < 1) {
       req.session.error = "유효한 송금 정보를 입력해주세요.";
@@ -1428,8 +1506,8 @@ app.post("/product/new", requireAuth, function (req, res, next) {
       return res.redirect("/product/new");
     }
     try {
-      const name = (req.body.name || "").trim();
-      const description = (req.body.description || "").trim();
+      const name = (req.body.name || "").trim().slice(0, 100);
+      const description = (req.body.description || "").trim().slice(0, 2000);
       const price = Number(req.body.price || 0);
       const category = (req.body.category || "기타").trim();
       const region = (req.body.region || "미지정").trim();
@@ -1597,14 +1675,14 @@ app.post("/reports", requireAuth, async function (req, res, next) {
     } catch (err) {
       if (err.code === "23505") {
         req.session.error = "같은 대상은 한 번만 신고할 수 있습니다.";
-        return res.redirect(req.get("referer") || "/");
+        return res.redirect(safeBack(req, "/"));
       }
       throw err;
     }
     await enforceModeration(targetType, targetId);
     await refreshSessionUser(req);
     req.session.success = "신고가 접수되었습니다.";
-    res.redirect(req.get("referer") || "/");
+    res.redirect(safeBack(req, "/"));
   } catch (e) { next(e); }
 });
 
@@ -2012,6 +2090,10 @@ app.post("/admin/users/:id/suspend", requireAuth, requireAdmin, async function (
   try {
     const days = Number(req.body.duration || 0);
     const uid = Number(req.params.id);
+    if (uid === req.session.user.id) {
+      req.session.error = "자기 자신을 정지할 수 없습니다.";
+      return res.redirect("/admin/users");
+    }
     if (days === 0) {
       await pool.query("UPDATE users SET suspended_until = NULL WHERE id = $1", [uid]);
       req.session.success = "정지를 해제했습니다.";
@@ -2032,6 +2114,10 @@ app.post("/admin/users/:id/suspend", requireAuth, requireAdmin, async function (
 
 app.post("/admin/users/:id/toggle-dormant", requireAuth, requireAdmin, async function (req, res, next) {
   try {
+    if (Number(req.params.id) === req.session.user.id) {
+      req.session.error = "자기 자신을 영구정지할 수 없습니다.";
+      return res.redirect("/admin/users");
+    }
     const user = await queryOne("SELECT is_dormant AS \"isDormant\" FROM users WHERE id = $1", [Number(req.params.id)]);
     if (user) {
       await pool.query("UPDATE users SET is_dormant = $1 WHERE id = $2",
@@ -2168,7 +2254,11 @@ io.on("connection", function (socket) {
   socket.on("chat-message", async function (payload) {
     try {
       const su = socket.request.session && socket.request.session.user;
-      if (!su || su.isDormant) return;
+      if (!su) return;
+      // ⑦ 세션 캐시 대신 DB에서 최신 정지·영구정지 상태 재확인
+      const freshUser = await queryOne("SELECT is_dormant AS \"isDormant\", suspended_until AS \"suspendedUntil\" FROM users WHERE id = $1", [su.id]);
+      if (!freshUser || freshUser.isDormant) return;
+      if (freshUser.suspendedUntil && new Date(freshUser.suspendedUntil) > new Date()) return;
       const content = String(payload.content || "").trim().slice(0, 500);
       if (!content) return;
       const roomType = payload.roomType === "direct" ? "direct" : "global";
