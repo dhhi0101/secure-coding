@@ -1767,7 +1767,7 @@ app.get("/admin", requireAuth, requireAdmin, async function (req, res, next) {
       reports: parseInt(mr.count), messages: parseInt(mm.count),
       transfers: parseInt(mt.count), warnedUsers: parseInt(mwarn.count)
     };
-    const [recentUsers, recentReports, recentTransfers] = await Promise.all([
+    const [recentUsers, recentReports, recentTransfers, recentMessages] = await Promise.all([
       query(`SELECT id, username, display_name AS "displayName", is_dormant AS "isDormant", warnings, created_at AS "createdAt"
              FROM users ORDER BY created_at DESC LIMIT 5`),
       query(`SELECT r.id, r.target_type AS "targetType", r.target_id AS "targetId", r.reason, r.created_at AS "createdAt",
@@ -1776,7 +1776,10 @@ app.get("/admin", requireAuth, requireAdmin, async function (req, res, next) {
       query(`SELECT t.id, t.amount, t.created_at AS "createdAt",
              sender.display_name AS "senderName", receiver.display_name AS "receiverName"
              FROM transfers t JOIN users sender ON sender.id = t.sender_id
-             JOIN users receiver ON receiver.id = t.receiver_id ORDER BY t.created_at DESC LIMIT 5`)
+             JOIN users receiver ON receiver.id = t.receiver_id ORDER BY t.created_at DESC LIMIT 5`),
+      query(`SELECT m.id, m.room_type AS "roomType", m.content, m.created_at AS "createdAt", u.display_name AS "displayName"
+             FROM messages m JOIN users u ON u.id = m.sender_id
+             WHERE m.type = 'text' ORDER BY m.created_at DESC LIMIT 5`)
     ]);
     res.send(layout(req, "관리자 대시보드", [
       '<section class="stats-grid">',
@@ -1809,6 +1812,14 @@ app.get("/admin", requireAuth, requireAdmin, async function (req, res, next) {
           return '<div class="subcard row"><span>' + h(t.senderName) + ' → ' + h(t.receiverName) +
             ' · <strong>' + amount(t.amount) + '</strong></span>' +
             '<small>' + formatKST(t.createdAt) + '</small></div>';
+        }).join(""), "<p>없음</p>"),
+      adminSection("최근 채팅", "/admin/messages",
+        recentMessages.map(function (m) {
+          return '<div class="subcard row"><span>' +
+            '<strong>' + h(m.displayName) + '</strong>' +
+            ' <small>[' + (m.roomType === 'direct' ? 'DM' : '전체') + ']</small> ' +
+            h(m.content) + '</span>' +
+            '<small>' + formatKST(m.createdAt) + '</small></div>';
         }).join(""), "<p>없음</p>"),
       '</div>'
     ].join("")));
@@ -2041,6 +2052,59 @@ app.post("/admin/products/:id/toggle-block", requireAuth, requireAdmin, async fu
     }
     req.session.success = "상품 상태를 변경했습니다.";
     res.redirect("/admin/products");
+  } catch (e) { next(e); }
+});
+
+app.get("/admin/messages", requireAuth, requireAdmin, async function (req, res, next) {
+  try {
+    const q = (req.query.q || "").trim();
+    const type = req.query.type || "all";
+    const date = (req.query.date || "").trim();
+    const page = Math.max(1, parseInt(req.query.page || 1));
+    const limit = 30, offset = (page - 1) * limit;
+    const conds = [
+      q ? "(m.content ILIKE '%'||$1||'%' OR u.display_name ILIKE '%'||$1||'%')" : null,
+      type !== "all" ? "m.room_type = '" + (type === "global" ? "global" : "direct") + "'" : null,
+      date ? "m.created_at::DATE = '" + date.replace(/[^0-9-]/g, "") + "'" : null
+    ].filter(Boolean);
+    const cond = conds.length ? "WHERE " + conds.join(" AND ") : "";
+    const params = q ? [q] : [];
+    const [total, messages] = await Promise.all([
+      queryOne("SELECT COUNT(*) AS count FROM messages m JOIN users u ON u.id = m.sender_id " + cond, params),
+      query(`SELECT m.id, m.room_type AS "roomType", m.room_id AS "roomId", m.content,
+             m.created_at AS "createdAt", m.type, u.display_name AS "displayName", u.id AS "senderId"
+             FROM messages m JOIN users u ON u.id = m.sender_id ` + cond +
+             " ORDER BY m.created_at DESC LIMIT " + limit + " OFFSET " + offset, params)
+    ]);
+    const totalPages = Math.ceil(parseInt(total.count) / limit);
+    res.send(layout(req, "채팅 로그", [
+      '<section class="section-head"><h1>채팅 로그</h1><a class="button" href="/admin">← 대시보드</a></section>',
+      '<form method="get" action="/admin/messages" class="card search-panel" style="margin-bottom:16px">',
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">',
+      '<input name="q" value="' + h(q) + '" placeholder="내용 또는 발신자" style="max-width:200px" />',
+      '<input type="date" name="date" value="' + h(date) + '" />',
+      '<a class="button' + (type==='all'?' primary':'') + '" href="/admin/messages' + (date?'?date='+date:'') + '">전체</a>',
+      '<a class="button' + (type==='global'?' primary':'') + '" href="/admin/messages?type=global' + (date?'&date='+date:'') + '">전체채팅</a>',
+      '<a class="button' + (type==='direct'?' primary':'') + '" href="/admin/messages?type=direct' + (date?'&date='+date:'') + '">DM</a>',
+      '<button type="submit" class="primary">검색</button>',
+      q||date ? '<a class="button" href="/admin/messages">초기화</a>' : '',
+      '</div></form>',
+      '<div class="stack">',
+      messages.map(function (m) {
+        const roomLink = m.roomType === 'direct'
+          ? '<a href="/chat/direct/' + m.roomId + '">[DM #' + m.roomId + ']</a>'
+          : '[전체채팅]';
+        return '<div class="subcard row"><span>' +
+          roomLink + ' <strong>' + h(m.displayName) + '</strong> ' +
+          (m.type === 'transfer' ? '<span class="badge warn">송금카드</span> ' : '') +
+          h(m.content) +
+          '</span><small>' + formatKST(m.createdAt, {seconds: true}) + '</small></div>';
+      }).join("") || "<p>메시지가 없습니다.</p>",
+      '</div>',
+      totalPages > 1 ? '<div class="pagination">' + Array.from({length: totalPages}, function(_, i) {
+        return '<a class="button' + (page===i+1?' primary':'') + '" href="/admin/messages?page='+(i+1)+(q?'&q='+encodeURIComponent(q):'')+(date?'&date='+date:'')+'&type='+type+'">'+(i+1)+'</a>';
+      }).join("") + '</div>' : ""
+    ].join("")));
   } catch (e) { next(e); }
 });
 
