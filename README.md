@@ -1,9 +1,5 @@
 # UsedHub — 중고거래 플랫폼
 
-**배포 URL: https://usedhub.onrender.com**
-
-> 첫 접속 시 30~60초 대기가 발생할 수 있습니다 (Render 무료 플랜 슬립 모드).
-
 ---
 
 ## 목차
@@ -19,15 +15,23 @@
 
 ## 1. 환경 설정 및 실행 방법
 
-### 사전 요구사항
+### 배포 환경 접속
 
-- Node.js 18 이상
-- PostgreSQL (또는 Supabase 프로젝트)
-- Supabase Storage (이미지 업로드용)
+**배포 URL: https://usedhub.onrender.com**
 
-### 환경변수 설정
+> 첫 접속 시 30~60초 대기가 발생할 수 있습니다 (Render 무료 플랜 슬립 모드).
 
-프로젝트 루트에 `.env` 파일을 생성하고 아래 항목을 채웁니다.
+### 기본 관리자 계정
+
+| 항목 | 값 |
+|------|----|
+| 아이디 | `admin` |
+| 비밀번호 | `admin1234` |
+
+### 로컬 실행 (선택 사항)
+
+DB와 이미지 스토리지가 Supabase 외부 서비스에 의존하므로, 별도 설정 없이는 로컬 실행이 불가합니다.
+로컬에서 실행하려면 프로젝트 루트에 `.env` 파일을 생성하고 아래 항목을 설정한 뒤 실행합니다.
 
 ```
 DATABASE_URL=postgresql://...
@@ -36,23 +40,10 @@ SUPABASE_URL=https://xxxx.supabase.co
 SUPABASE_SERVICE_KEY=...
 ```
 
-### 실행
-
 ```bash
 npm install
 npm start
 ```
-
-서버가 기동되면 `http://localhost:3000` 으로 접속합니다.
-
-### 기본 관리자 계정
-
-서버 최초 실행 시 자동으로 생성됩니다.
-
-| 항목 | 값 |
-|------|----|
-| 아이디 | `admin` |
-| 비밀번호 | `admin1234` |
 
 ---
 
