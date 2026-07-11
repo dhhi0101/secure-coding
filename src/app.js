@@ -222,13 +222,12 @@ function amount(value) {
   return Number(value || 0).toLocaleString("ko-KR") + "원";
 }
 
-function formatKST(v) {
+function formatKST(v, opts) {
   if (!v) return "";
   try {
-    return new Date(v).toLocaleString("ko-KR", {
-      timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit",
-      hour: "2-digit", minute: "2-digit"
-    });
+    const base = { timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" };
+    if (opts && opts.seconds) base.second = "2-digit";
+    return new Date(v).toLocaleString("ko-KR", base);
   } catch (e) { return String(v); }
 }
 
@@ -1744,103 +1743,251 @@ app.post("/chat/direct/:roomId/leave", requireAuth, async function (req, res, ne
   } catch (e) { next(e); }
 });
 
+function adminSection(title, link, rows, empty) {
+  return '<article class="card">' +
+    '<div class="section-head" style="margin-bottom:12px"><h2>' + title + '</h2><a class="button" href="' + link + '">전체 보기</a></div>' +
+    '<div class="stack">' + (rows || empty || "") + '</div></article>';
+}
+
 app.get("/admin", requireAuth, requireAdmin, async function (req, res, next) {
   try {
-    const [mu, mdorm, mp, mblock, mr, mm, mt] = await Promise.all([
+    const [mu, mdorm, mp, mblock, mr, mm, mt, mwarn] = await Promise.all([
       queryOne("SELECT COUNT(*) AS count FROM users"),
       queryOne("SELECT COUNT(*) AS count FROM users WHERE is_dormant = 1"),
       queryOne("SELECT COUNT(*) AS count FROM products"),
       queryOne("SELECT COUNT(*) AS count FROM products WHERE is_blocked = 1"),
       queryOne("SELECT COUNT(*) AS count FROM reports"),
       queryOne("SELECT COUNT(*) AS count FROM messages"),
-      queryOne("SELECT COUNT(*) AS count FROM transfers")
+      queryOne("SELECT COUNT(*) AS count FROM transfers"),
+      queryOne("SELECT COUNT(*) AS count FROM users WHERE warnings > 0")
     ]);
     const metrics = {
       users: parseInt(mu.count), dormantUsers: parseInt(mdorm.count),
       products: parseInt(mp.count), blockedProducts: parseInt(mblock.count),
-      reports: parseInt(mr.count), messages: parseInt(mm.count), transfers: parseInt(mt.count)
+      reports: parseInt(mr.count), messages: parseInt(mm.count),
+      transfers: parseInt(mt.count), warnedUsers: parseInt(mwarn.count)
     };
-    const users = await query(
-      `SELECT id, username, display_name AS "displayName", balance, is_dormant AS "isDormant", is_admin AS "isAdmin",
-       warnings, suspended_until AS "suspendedUntil"
-       FROM users ORDER BY created_at DESC LIMIT 50`
-    );
-    const products = await query(
-      `SELECT p.id, p.name, p.price, p.status, p.is_blocked AS "isBlocked", u.display_name AS "sellerName"
-       FROM products p JOIN users u ON u.id = p.seller_id ORDER BY p.created_at DESC LIMIT 30`
-    );
-    const reports = await query(
-      `SELECT r.id, r.target_type AS "targetType", r.target_id AS "targetId", r.reason, r.created_at AS "createdAt",
-       reporter.display_name AS "reporterName"
-       FROM reports r JOIN users reporter ON reporter.id = r.reporter_id ORDER BY r.created_at DESC LIMIT 30`
-    );
-    const transfers = await query(
-      `SELECT t.id, t.amount, t.note, t.created_at AS "createdAt",
-       sender.display_name AS "senderName", receiver.display_name AS "receiverName"
-       FROM transfers t
-       JOIN users sender ON sender.id = t.sender_id
-       JOIN users receiver ON receiver.id = t.receiver_id ORDER BY t.created_at DESC LIMIT 20`
-    );
-    const chatLogs = await query(
-      `SELECT m.id, m.room_type AS "roomType", m.content, m.created_at AS "createdAt", u.display_name AS "displayName"
-       FROM messages m JOIN users u ON u.id = m.sender_id ORDER BY m.created_at DESC LIMIT 20`
-    );
-    res.send(layout(req, "관리자", [
+    const [recentUsers, recentReports, recentTransfers] = await Promise.all([
+      query(`SELECT id, username, display_name AS "displayName", is_dormant AS "isDormant", warnings, created_at AS "createdAt"
+             FROM users ORDER BY created_at DESC LIMIT 5`),
+      query(`SELECT r.id, r.target_type AS "targetType", r.target_id AS "targetId", r.reason, r.created_at AS "createdAt",
+             reporter.display_name AS "reporterName"
+             FROM reports r JOIN users reporter ON reporter.id = r.reporter_id ORDER BY r.created_at DESC LIMIT 5`),
+      query(`SELECT t.id, t.amount, t.created_at AS "createdAt",
+             sender.display_name AS "senderName", receiver.display_name AS "receiverName"
+             FROM transfers t JOIN users sender ON sender.id = t.sender_id
+             JOIN users receiver ON receiver.id = t.receiver_id ORDER BY t.created_at DESC LIMIT 5`)
+    ]);
+    res.send(layout(req, "관리자 대시보드", [
       '<section class="stats-grid">',
-      '<article class="card stat"><strong>' + metrics.users + "</strong><span>전체 사용자</span></article>",
-      '<article class="card stat"><strong>' + metrics.dormantUsers + "</strong><span>휴면 사용자</span></article>",
-      '<article class="card stat"><strong>' + metrics.products + "</strong><span>전체 상품</span></article>",
-      '<article class="card stat"><strong>' + metrics.blockedProducts + "</strong><span>차단 상품</span></article>",
-      '<article class="card stat"><strong>' + metrics.reports + "</strong><span>신고</span></article>",
-      '<article class="card stat"><strong>' + metrics.messages + "</strong><span>메시지</span></article>",
-      '<article class="card stat"><strong>' + metrics.transfers + "</strong><span>송금</span></article>",
-      "</section>",
-      '<section class="grid admin-grid">',
-      '<article class="card"><h2>유저 관리</h2><div class="stack">' +
-        users.map(function (u) {
-          const statusText = u.isDormant ? "영구정지" : suspendLabel(u.suspendedUntil);
-          return '<div class="subcard"><div class="row">' +
-            "<span>" + h(u.displayName) + " (@" + h(u.username) + ") · " + amount(u.balance) +
-            " · " + (u.isAdmin ? "관리자" : "일반") +
-            " · <strong>" + statusText + "</strong>" +
-            " · 경고 " + (u.warnings || 0) + "회</span></div>" +
-            '<div class="actions">' +
-            '<form method="post" action="/admin/users/' + u.id + '/suspend" class="inline">' +
-            '<select name="duration"><option value="0">정지 해제</option>' +
-            '<option value="1">1일</option><option value="3">3일</option>' +
-            '<option value="7">7일</option><option value="30">30일</option>' +
-            '<option value="365">1년</option></select>' +
-            '<button type="submit">적용</button></form>' +
-            '<form method="post" action="/admin/users/' + u.id + '/toggle-dormant" class="inline">' +
-            '<button type="submit">' + (u.isDormant ? "영구정지 해제" : "영구정지") + '</button></form>' +
-            '</div></div>';
-        }).join("") + "</div></article>",
-      '<article class="card"><h2>상품 관리</h2><div class="stack">' +
-        products.map(function (product) {
-          return '<div class="subcard"><strong>' + h(product.name) + "</strong>" +
-            "<span>" + h(product.sellerName) + " · " + amount(product.price) + " · " + h(product.status) + " · " + (product.isBlocked ? "차단됨" : "정상") + "</span>" +
-            '<div class="actions">' +
-            '<form method="post" action="/admin/products/' + product.id + '/toggle-block"><button type="submit">' + (product.isBlocked ? "차단 해제" : "차단") + "</button></form>" +
-            '<form method="post" action="/admin/products/' + product.id + '/delete"><button type="submit">삭제</button></form>' +
-            "</div></div>";
-        }).join("") + "</div></article>",
-      '<article class="card"><h2>신고 내역</h2><div class="stack">' +
-        (reports.map(function (r) {
-          return '<div class="subcard"><strong>#' + r.id + " " + h(r.targetType) + ":" + r.targetId + "</strong>" +
-            "<span>신고자 " + h(r.reporterName) + "</span><span>" + h(r.reason) + "</span><small>" + h(r.createdAt) + "</small></div>";
-        }).join("") || "<p>신고가 없습니다.</p>") + "</div></article>",
-      '<article class="card"><h2>송금 로그</h2><div class="stack">' +
-        (transfers.map(function (item) {
-          return '<div class="subcard"><strong>' + amount(item.amount) + "</strong>" +
-            "<span>" + h(item.senderName) + " → " + h(item.receiverName) + "</span>" +
-            "<span>" + h(item.note || "메모 없음") + "</span><small>" + h(item.createdAt) + "</small></div>";
-        }).join("") || "<p>송금 내역이 없습니다.</p>") + "</div></article>",
-      '<article class="card"><h2>채팅 로그</h2><div class="stack">' +
-        (chatLogs.map(function (m) {
-          return '<div class="subcard"><strong>' + h(m.displayName) + " · " + h(m.roomType) + "</strong>" +
-            "<span>" + h(m.content) + "</span><small>" + h(m.createdAt) + "</small></div>";
-        }).join("") || "<p>메시지가 없습니다.</p>") + "</div></article>",
-      "</section>"
+      '<article class="card stat"><strong>' + metrics.users + '</strong><span>전체 사용자</span></article>',
+      '<article class="card stat"><strong>' + metrics.dormantUsers + '</strong><span>영구정지</span></article>',
+      '<article class="card stat"><strong>' + metrics.warnedUsers + '</strong><span>경고 유저</span></article>',
+      '<article class="card stat"><strong>' + metrics.products + '</strong><span>전체 상품</span></article>',
+      '<article class="card stat"><strong>' + metrics.blockedProducts + '</strong><span>차단 상품</span></article>',
+      '<article class="card stat"><strong>' + metrics.reports + '</strong><span>누적 신고</span></article>',
+      '<article class="card stat"><strong>' + metrics.transfers + '</strong><span>총 송금</span></article>',
+      '<article class="card stat"><strong>' + metrics.messages + '</strong><span>총 메시지</span></article>',
+      '</section>',
+      '<div class="admin-dash-grid">',
+      adminSection("최근 가입 유저", "/admin/users",
+        recentUsers.map(function (u) {
+          return '<div class="subcard row"><span>' + h(u.displayName) + ' <small>@' + h(u.username) + '</small>' +
+            (u.isDormant ? ' <span class="badge danger">영구정지</span>' : '') +
+            (u.warnings > 0 ? ' <span class="badge warn">경고 ' + u.warnings + '</span>' : '') +
+            '</span><small>' + formatKST(u.createdAt) + '</small></div>';
+        }).join(""), "<p>없음</p>"),
+      adminSection("최근 신고", "/admin/reports",
+        recentReports.map(function (r) {
+          return '<div class="subcard"><span><strong>' + h(r.reporterName) + '</strong> → ' +
+            h(r.targetType) + ' #' + r.targetId + '</span>' +
+            '<span style="color:var(--muted);font-size:13px">' + h(r.reason) + '</span>' +
+            '<small>' + formatKST(r.createdAt) + '</small></div>';
+        }).join(""), "<p>없음</p>"),
+      adminSection("최근 송금", "/admin/transfers",
+        recentTransfers.map(function (t) {
+          return '<div class="subcard row"><span>' + h(t.senderName) + ' → ' + h(t.receiverName) +
+            ' · <strong>' + amount(t.amount) + '</strong></span>' +
+            '<small>' + formatKST(t.createdAt) + '</small></div>';
+        }).join(""), "<p>없음</p>"),
+      '</div>'
+    ].join("")));
+  } catch (e) { next(e); }
+});
+
+// ── Admin 상세 페이지들 ─────────────────────────────────
+
+app.get("/admin/users", requireAuth, requireAdmin, async function (req, res, next) {
+  try {
+    const q = (req.query.q || "").trim();
+    const filter = req.query.filter || "all";
+    const page = Math.max(1, parseInt(req.query.page || 1));
+    const limit = 20, offset = (page - 1) * limit;
+    const where = [
+      q ? "(username ILIKE '%'||$1||'%' OR display_name ILIKE '%'||$1||'%')" : null,
+      filter === "dormant" ? "is_dormant = 1" : null,
+      filter === "warned" ? "warnings > 0" : null,
+      filter === "suspended" ? "suspended_until > NOW()" : null
+    ].filter(Boolean);
+    const cond = where.length ? "WHERE " + where.join(" AND ") : "";
+    const params = q ? [q] : [];
+    const [total, users] = await Promise.all([
+      queryOne("SELECT COUNT(*) AS count FROM users " + cond, params),
+      query("SELECT id, username, display_name AS \"displayName\", balance, is_dormant AS \"isDormant\", is_admin AS \"isAdmin\", warnings, suspended_until AS \"suspendedUntil\", created_at AS \"createdAt\" FROM users " + cond + " ORDER BY created_at DESC LIMIT " + limit + " OFFSET " + offset, params)
+    ]);
+    const totalPages = Math.ceil(parseInt(total.count) / limit);
+    const filters = [["all","전체"],["dormant","영구정지"],["warned","경고"],["suspended","정지중"]];
+    res.send(layout(req, "유저 관리", [
+      '<section class="section-head"><h1>유저 관리</h1><a class="button" href="/admin">← 대시보드</a></section>',
+      '<form method="get" action="/admin/users" class="card search-panel" style="margin-bottom:16px">',
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">',
+      '<input name="q" value="' + h(q) + '" placeholder="아이디 또는 닉네임" style="max-width:220px" />',
+      filters.map(function(f){ return '<a class="button' + (filter===f[0]?' primary':'') + '" href="/admin/users?filter=' + f[0] + (q?'&q='+encodeURIComponent(q):'') + '">' + f[1] + '</a>'; }).join(""),
+      '<button type="submit" class="primary">검색</button></div></form>',
+      '<div class="stack">',
+      users.map(function (u) {
+        const statusText = u.isDormant ? "영구정지" : suspendLabel(u.suspendedUntil);
+        return '<div class="subcard"><div class="row"><span>' +
+          h(u.displayName) + ' <small>@' + h(u.username) + '</small> · ' + amount(u.balance) +
+          ' · ' + (u.isAdmin ? '관리자' : '일반') +
+          ' · <strong>' + statusText + '</strong> · 경고 ' + (u.warnings||0) + '회' +
+          '</span><small>' + formatKST(u.createdAt) + '</small></div>' +
+          '<div class="actions">' +
+          '<form method="post" action="/admin/users/' + u.id + '/suspend" class="inline">' +
+          '<select name="duration"><option value="0">정지 해제</option>' +
+          '<option value="1">1일</option><option value="3">3일</option>' +
+          '<option value="7">7일</option><option value="30">30일</option>' +
+          '<option value="365">1년</option></select>' +
+          '<button type="submit">적용</button></form>' +
+          '<form method="post" action="/admin/users/' + u.id + '/toggle-dormant" class="inline">' +
+          '<button type="submit">' + (u.isDormant ? '영구정지 해제' : '영구정지') + '</button></form>' +
+          '</div></div>';
+      }).join("") || "<p>해당하는 유저가 없습니다.</p>",
+      '</div>',
+      totalPages > 1 ? '<div class="pagination">' + Array.from({length:totalPages},function(_,i){
+        return '<a class="button' + (page===i+1?' primary':'') + '" href="/admin/users?page='+(i+1)+(q?'&q='+encodeURIComponent(q):'')+'&filter='+filter+'">'+(i+1)+'</a>';
+      }).join("") + '</div>' : ""
+    ].join("")));
+  } catch (e) { next(e); }
+});
+
+app.get("/admin/products", requireAuth, requireAdmin, async function (req, res, next) {
+  try {
+    const q = (req.query.q || "").trim();
+    const filter = req.query.filter || "all";
+    const page = Math.max(1, parseInt(req.query.page || 1));
+    const limit = 20, offset = (page - 1) * limit;
+    const conds = [filter === "blocked" ? "p.is_blocked = 1" : null, q ? "(p.name ILIKE '%'||$1||'%')" : null].filter(Boolean);
+    const cond = conds.length ? "WHERE " + conds.join(" AND ") : "";
+    const params = q ? [q] : [];
+    const [total, products] = await Promise.all([
+      queryOne("SELECT COUNT(*) AS count FROM products p " + cond, params),
+      query(`SELECT p.id, p.name, p.price, p.status, p.is_blocked AS "isBlocked", p.created_at AS "createdAt", u.display_name AS "sellerName"
+             FROM products p JOIN users u ON u.id = p.seller_id ` + cond + " ORDER BY p.created_at DESC LIMIT " + limit + " OFFSET " + offset, params)
+    ]);
+    const totalPages = Math.ceil(parseInt(total.count) / limit);
+    res.send(layout(req, "상품 관리", [
+      '<section class="section-head"><h1>상품 관리</h1><a class="button" href="/admin">← 대시보드</a></section>',
+      '<form method="get" action="/admin/products" class="card search-panel" style="margin-bottom:16px">',
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">',
+      '<input name="q" value="' + h(q) + '" placeholder="상품명" style="max-width:220px" />',
+      '<a class="button' + (filter==='all'?' primary':'') + '" href="/admin/products">전체</a>',
+      '<a class="button' + (filter==='blocked'?' primary':'') + '" href="/admin/products?filter=blocked">차단됨</a>',
+      '<button type="submit" class="primary">검색</button></div></form>',
+      '<div class="stack">',
+      products.map(function (p) {
+        return '<div class="subcard"><div class="row"><span><strong>' + h(p.name) + '</strong> · ' + h(p.sellerName) +
+          ' · ' + amount(p.price) + ' · ' + h(p.status) + ' · ' + (p.isBlocked ? '<strong style="color:var(--danger)">차단</strong>' : '정상') +
+          '</span><small>' + formatKST(p.createdAt) + '</small></div>' +
+          '<div class="actions">' +
+          '<form method="post" action="/admin/products/' + p.id + '/toggle-block" class="inline"><button type="submit">' + (p.isBlocked ? '차단 해제' : '차단') + '</button></form>' +
+          '<form method="post" action="/admin/products/' + p.id + '/delete" class="inline"><button type="submit">삭제</button></form>' +
+          '</div></div>';
+      }).join("") || "<p>상품이 없습니다.</p>",
+      '</div>',
+      totalPages > 1 ? '<div class="pagination">' + Array.from({length:totalPages},function(_,i){
+        return '<a class="button' + (page===i+1?' primary':'') + '" href="/admin/products?page='+(i+1)+(q?'&q='+encodeURIComponent(q):'')+'&filter='+filter+'">'+(i+1)+'</a>';
+      }).join("") + '</div>' : ""
+    ].join("")));
+  } catch (e) { next(e); }
+});
+
+app.get("/admin/reports", requireAuth, requireAdmin, async function (req, res, next) {
+  try {
+    const q = (req.query.q || "").trim();
+    const type = req.query.type || "all";
+    const page = Math.max(1, parseInt(req.query.page || 1));
+    const limit = 20, offset = (page - 1) * limit;
+    const conds = [type !== "all" ? "r.target_type = '" + (type === "user" ? "user" : "product") + "'" : null].filter(Boolean);
+    const cond = conds.length ? "WHERE " + conds.join(" AND ") : "";
+    const [total, reports] = await Promise.all([
+      queryOne("SELECT COUNT(*) AS count FROM reports r " + cond),
+      query(`SELECT r.id, r.target_type AS "targetType", r.target_id AS "targetId", r.reason, r.created_at AS "createdAt",
+             reporter.display_name AS "reporterName"
+             FROM reports r JOIN users reporter ON reporter.id = r.reporter_id ` + cond + " ORDER BY r.created_at DESC LIMIT " + limit + " OFFSET " + offset)
+    ]);
+    const totalPages = Math.ceil(parseInt(total.count) / limit);
+    res.send(layout(req, "신고 내역", [
+      '<section class="section-head"><h1>신고 내역</h1><a class="button" href="/admin">← 대시보드</a></section>',
+      '<div style="display:flex;gap:8px;margin-bottom:16px">',
+      '<a class="button' + (type==='all'?' primary':'') + '" href="/admin/reports">전체</a>',
+      '<a class="button' + (type==='user'?' primary':'') + '" href="/admin/reports?type=user">유저 신고</a>',
+      '<a class="button' + (type==='product'?' primary':'') + '" href="/admin/reports?type=product">상품 신고</a>',
+      '</div>',
+      '<div class="stack">',
+      reports.map(function (r) {
+        return '<div class="subcard"><div class="row"><span><strong>' + h(r.reporterName) + '</strong> → ' +
+          h(r.targetType) + ' #' + r.targetId + '</span><small>' + formatKST(r.createdAt) + '</small></div>' +
+          '<p style="color:var(--muted);font-size:13px">' + h(r.reason) + '</p></div>';
+      }).join("") || "<p>신고가 없습니다.</p>",
+      '</div>',
+      totalPages > 1 ? '<div class="pagination">' + Array.from({length:totalPages},function(_,i){
+        return '<a class="button' + (page===i+1?' primary':'') + '" href="/admin/reports?page='+(i+1)+'&type='+type+'">'+(i+1)+'</a>';
+      }).join("") + '</div>' : ""
+    ].join("")));
+  } catch (e) { next(e); }
+});
+
+app.get("/admin/transfers", requireAuth, requireAdmin, async function (req, res, next) {
+  try {
+    const q = (req.query.q || "").trim();
+    const date = (req.query.date || "").trim();
+    const page = Math.max(1, parseInt(req.query.page || 1));
+    const limit = 20, offset = (page - 1) * limit;
+    const conds = [
+      q ? "(sender.display_name ILIKE '%'||$1||'%' OR receiver.display_name ILIKE '%'||$1||'%')" : null,
+      date ? "t.created_at::DATE = '" + date.replace(/[^0-9-]/g,"") + "'" : null
+    ].filter(Boolean);
+    const cond = conds.length ? "WHERE " + conds.join(" AND ") : "";
+    const params = q ? [q] : [];
+    const [total, transfers] = await Promise.all([
+      queryOne("SELECT COUNT(*) AS count FROM transfers t JOIN users sender ON sender.id=t.sender_id JOIN users receiver ON receiver.id=t.receiver_id " + cond, params),
+      query(`SELECT t.id, t.amount, t.note, t.created_at AS "createdAt",
+             sender.display_name AS "senderName", receiver.display_name AS "receiverName"
+             FROM transfers t JOIN users sender ON sender.id = t.sender_id
+             JOIN users receiver ON receiver.id = t.receiver_id ` + cond + " ORDER BY t.created_at DESC LIMIT " + limit + " OFFSET " + offset, params)
+    ]);
+    const totalPages = Math.ceil(parseInt(total.count) / limit);
+    res.send(layout(req, "송금 로그", [
+      '<section class="section-head"><h1>송금 로그</h1><a class="button" href="/admin">← 대시보드</a></section>',
+      '<form method="get" action="/admin/transfers" class="card search-panel" style="margin-bottom:16px">',
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">',
+      '<input name="q" value="' + h(q) + '" placeholder="보낸이 또는 받는이" style="max-width:200px" />',
+      '<input type="date" name="date" value="' + h(date) + '" />',
+      '<button type="submit" class="primary">검색</button>',
+      q||date ? '<a class="button" href="/admin/transfers">초기화</a>' : '',
+      '</div></form>',
+      '<div class="stack">',
+      transfers.map(function (t) {
+        return '<div class="subcard row"><span><strong>' + amount(t.amount) + '</strong> · ' +
+          h(t.senderName) + ' → ' + h(t.receiverName) +
+          (t.note ? ' · <small>' + h(t.note) + '</small>' : '') +
+          '</span><small>' + formatKST(t.createdAt, {seconds:true}) + '</small></div>';
+      }).join("") || "<p>송금 내역이 없습니다.</p>",
+      '</div>',
+      totalPages > 1 ? '<div class="pagination">' + Array.from({length:totalPages},function(_,i){
+        return '<a class="button' + (page===i+1?' primary':'') + '" href="/admin/transfers?page='+(i+1)+(q?'&q='+encodeURIComponent(q):'')+(date?'&date='+date:'')+'">'+(i+1)+'</a>';
+      }).join("") + '</div>' : ""
     ].join("")));
   } catch (e) { next(e); }
 });
@@ -1863,7 +2010,7 @@ app.post("/admin/users/:id/suspend", requireAuth, requireAdmin, async function (
       io.to("user:" + uid).emit("notification", { message: notifMsg, link: "/mypage" });
       req.session.success = days + "일 정지를 적용했습니다.";
     }
-    res.redirect("/admin");
+    res.redirect("/admin/users");
   } catch (e) { next(e); }
 });
 
@@ -1881,7 +2028,7 @@ app.post("/admin/users/:id/toggle-dormant", requireAuth, requireAdmin, async fun
       }
     }
     req.session.success = "유저 상태를 변경했습니다.";
-    res.redirect("/admin");
+    res.redirect("/admin/users");
   } catch (e) { next(e); }
 });
 
@@ -1893,7 +2040,7 @@ app.post("/admin/products/:id/toggle-block", requireAuth, requireAdmin, async fu
         [product.isBlocked ? 0 : 1, Number(req.params.id)]);
     }
     req.session.success = "상품 상태를 변경했습니다.";
-    res.redirect("/admin");
+    res.redirect("/admin/products");
   } catch (e) { next(e); }
 });
 
@@ -1901,7 +2048,7 @@ app.post("/admin/products/:id/delete", requireAuth, requireAdmin, async function
   try {
     await pool.query("DELETE FROM products WHERE id = $1", [Number(req.params.id)]);
     req.session.success = "상품을 삭제했습니다.";
-    res.redirect("/admin");
+    res.redirect("/admin/products");
   } catch (e) { next(e); }
 });
 
