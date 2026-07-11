@@ -143,12 +143,22 @@ label { display: grid; gap: 6px; font-size: 14px; font-weight: 600; }
 .product-card img { height: 170px; border-radius: 12px 12px 0 0; }
 .product-card h3 { padding: 12px 14px; font-size: 14px; font-weight: 600; }
 .product-card-img-wrap { position: relative; }
-.product-sold-badge {
-  position: absolute; inset: 0;
+.product-sold-badge, .product-reserved-badge {
+  position: absolute;
   display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 700; letter-spacing: 0.03em;
+  border-radius: 6px; padding: 4px 10px;
+}
+.product-sold-badge {
+  inset: 0;
   background: rgba(0,0,0,0.45);
-  color: #fff; font-size: 15px; font-weight: 700; letter-spacing: 0.03em;
+  color: #fff;
   border-radius: 12px 12px 0 0;
+}
+.product-reserved-badge {
+  top: 8px; left: 8px;
+  background: #f97316;
+  color: #fff;
 }
 .product-card--sold h3 { color: var(--muted); }
 .inline-card { display: grid; grid-template-columns: 160px 1fr; gap: 16px; align-items: start; }

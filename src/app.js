@@ -377,12 +377,13 @@ function reportForm(targetType, targetId) {
 function productCard(product) {
   const img = product.imagePath || product.image_path || "";
   const sold = product.status === "판매완료";
+  const reserved = product.status === "예약중";
   return [
     '<article class="card product-card' + (sold ? " product-card--sold" : "") + '">',
     '<a href="/products/' + product.id + '">',
     '<div class="product-card-img-wrap">',
     '<img src="' + h(img) + '" alt="' + h(product.name) + '" />',
-    sold ? '<span class="product-sold-badge">판매완료</span>' : "",
+    sold ? '<span class="product-sold-badge">판매완료</span>' : (reserved ? '<span class="product-reserved-badge">예약중</span>' : ""),
     "</div>",
     "<h3>" + h(product.name) + "</h3>",
     "</a>",
