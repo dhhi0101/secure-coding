@@ -1626,9 +1626,9 @@ app.get("/chat", requireAuth, async function (req, res, next) {
           (SELECT created_at FROM messages WHERE room_type='direct' AND room_id=dr.id ORDER BY id DESC LIMIT 1) AS "lastAt",
           (SELECT COUNT(*) FROM messages m
            WHERE m.room_type='direct' AND m.room_id=dr.id AND m.sender_id != $1
-             AND m.created_at > COALESCE(
-               CASE WHEN dr.user_a_id=$1 THEN dr.user_a_last_read ELSE dr.user_b_last_read END,
-               '1970-01-01'
+             AND m.created_at::TIMESTAMPTZ > COALESCE(
+               (CASE WHEN dr.user_a_id=$1 THEN dr.user_a_last_read ELSE dr.user_b_last_read END)::TIMESTAMPTZ,
+               '1970-01-01'::TIMESTAMPTZ
              )
           ) AS "unreadCount"
         FROM direct_rooms dr
