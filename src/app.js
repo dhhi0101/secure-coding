@@ -572,7 +572,14 @@ function requireAuth(req, res, next) {
     return res.redirect("/login");
   }
   if (req.session.user.isDormant) {
-    req.session.error = "휴면 계정은 이용할 수 없습니다.";
+    req.session.error = "영구 정지된 계정입니다. 관리자에게 문의하세요.";
+    req.session.user = null;
+    return res.redirect("/login");
+  }
+  if (req.session.user.suspendedUntil && new Date(req.session.user.suspendedUntil) > new Date()) {
+    const diff = Math.ceil((new Date(req.session.user.suspendedUntil) - Date.now()) / 86400000);
+    req.session.error = "계정이 정지되었습니다. " + diff + "일 후 해제됩니다.";
+    req.session.user = null;
     return res.redirect("/login");
   }
   next();
@@ -632,7 +639,7 @@ app.get("/", async function (req, res, next) {
       '<form method="post" action="/register" class="stack">',
       '<label>아이디<input name="username" required placeholder="영문 소문자, 숫자만" autocomplete="username"/><small class="hint">영문 소문자(a-z)와 숫자(0-9)만 사용 가능합니다.</small></label>',
       '<label>닉네임<input name="displayName" required placeholder="다른 사람에게 보이는 이름"/></label>',
-      '<label>비밀번호<input type="password" name="password" required placeholder="영문, 숫자, 특수문자" autocomplete="new-password"/><small class="hint">영문(대소문자), 숫자, 특수문자만 사용 가능합니다.</small></label>',
+      '<label>비밀번호<input type="password" name="password" required placeholder="8자 이상, 영문·숫자·특수문자" autocomplete="new-password"/><small class="hint">영문(대소문자), 숫자, 특수문자만 사용 가능합니다.</small></label>',
       '<label>소개글<textarea name="bio" rows="3"></textarea></label>',
       '<button type="submit" class="button primary" style="width:100%">가입하기</button>',
       '</form>',
@@ -669,7 +676,7 @@ app.get("/register", function (req, res) {
     '<form method="post" action="/register" class="stack">',
     '<label>아이디<input name="username" required placeholder="영문 소문자, 숫자만" /><small class="hint">영문 소문자(a-z)와 숫자(0-9)만 사용 가능합니다.</small></label>',
     '<label>닉네임<input name="displayName" required placeholder="다른 사람에게 보이는 이름" /></label>',
-    '<label>비밀번호<input type="password" name="password" required placeholder="영문, 숫자, 특수문자" /><small class="hint">영문(대소문자), 숫자, 특수문자만 사용 가능합니다.</small></label>',
+    '<label>비밀번호<input type="password" name="password" required placeholder="8자 이상, 영문·숫자·특수문자" /><small class="hint">영문(대소문자), 숫자, 특수문자만 사용 가능합니다.</small></label>',
     "<label>소개글<textarea name=\"bio\" rows=\"4\"></textarea></label>",
     "<button type=\"submit\">가입하기</button>",
     "</form></section>"
@@ -704,6 +711,10 @@ app.post("/register", async function (req, res, next) {
     }
     if (!/^[a-z0-9]+$/.test(username)) {
       req.session.error = "아이디는 영문 소문자와 숫자만 사용할 수 있습니다.";
+      return res.redirect("/register");
+    }
+    if (password.length < 8) {
+      req.session.error = "비밀번호는 8자 이상이어야 합니다.";
       return res.redirect("/register");
     }
     if (!/^[a-zA-Z0-9!@#$%^&*()\-_=+\[\]{}|;:'",.<>/?~`\\]+$/.test(password)) {
@@ -1043,6 +1054,10 @@ app.post("/mypage", requireAuth, async function (req, res, next) {
       return res.redirect("/mypage");
     }
     if (password) {
+      if (password.length < 8) {
+        req.session.error = "비밀번호는 8자 이상이어야 합니다.";
+        return res.redirect("/mypage");
+      }
       if (!/^[a-zA-Z0-9!@#$%^&*()\-_=+\[\]{}|;:'",.<>/?~`\\]+$/.test(password)) {
         req.session.error = "비밀번호는 영문, 숫자, 특수문자만 사용할 수 있습니다.";
         return res.redirect("/mypage");
