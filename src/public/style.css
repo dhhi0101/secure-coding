@@ -142,6 +142,15 @@ label { display: grid; gap: 6px; font-size: 14px; font-weight: 600; }
 .product-card a { display: block; padding: 0; }
 .product-card img { height: 170px; border-radius: 12px 12px 0 0; }
 .product-card h3 { padding: 12px 14px; font-size: 14px; font-weight: 600; }
+.product-card-img-wrap { position: relative; }
+.product-sold-badge {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.45);
+  color: #fff; font-size: 15px; font-weight: 700; letter-spacing: 0.03em;
+  border-radius: 12px 12px 0 0;
+}
+.product-card--sold h3 { color: var(--muted); }
 .inline-card { display: grid; grid-template-columns: 160px 1fr; gap: 16px; align-items: start; }
 .inline-card img { height: 130px; border-radius: 12px; }
 .detail { display: grid; grid-template-columns: 1.2fr 1fr; gap: 20px; }
