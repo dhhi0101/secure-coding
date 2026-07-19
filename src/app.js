@@ -215,6 +215,8 @@ const sessionMiddleware = session({
   cookie: { httpOnly: true, sameSite: "lax", secure: isProduction } // ⑧ 프로덕션에서 secure
 });
 
+app.set("trust proxy", 1);
+
 // ⑥ 보안 헤더 (helmet)
 app.use(helmet({
   contentSecurityPolicy: false // 인라인 스크립트 사용 중이므로 CSP는 개별 설정
